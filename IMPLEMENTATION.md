@@ -4,13 +4,17 @@
 Ubuntu 24.04 host, kernel 7.0.0-38, 12 CPU / 15 GiB, ext4 `/tmp`. Python 3.12.3 (no pip/venv module: project-local `.venv`
 created with `--without-pip` + official `get-pip.py`). Docker 29.8.0 (runc, cgroup v2, AppArmor + builtin seccomp reported by the
 daemon, no userns remap), user in the `docker` group, default context `unix:///var/run/docker.sock`.
+Phase 2 tooling status on this host: `semgrep` and `osv-scanner` were **not installed** at the start of Phase 2. Semgrep 1.182.1 was then installed
+**into the project-local `.venv` only** (`pip install semgrep`, binary wheel, no project code involved; `.venv` is git-ignored) so the rules and parser could be checked
+against the real tool. `osv-scanner` 2.7.0 was installed during the final review (see *Final review*). (node 22/npm exist on the host but SafeRun never runs them on the host.)
 Images used by SafeRun: `python:3.12-slim` (present from the start) and `node:22-slim` (digest `sha256:4b150b48…`, pulled explicitly
 during the completion pass for the JavaScript tests; remove with `docker rmi node:22-slim` if unwanted). Not installed: semgrep,
 osv-scanner (Phase 2). The Docker host also holds unrelated images/containers — never touched.
 
 ## Phase 1 — Environment and Sandbox
-**Acceptance status: every documented Phase 1 criterion is met on the evidence below (236 tests, 0 skipped; limits listed). NOT
-approved — awaiting the owner's review. Passing tests do not prove the sandbox secure; see *Limitations*.**
+**Acceptance status: every documented Phase 1 criterion is met on the evidence below (236 tests, 0 skipped; limits listed).
+APPROVED by the owner as a project milestone and the baseline for Phase 2 — not a claim of perfect security or independent certification.
+Phase 1 may be changed later only for a concrete reason, with regression tests. Passing tests do not prove the sandbox secure; see *Limitations*.**
 
 ### Requirements checklist
 | Requirement (Phase 1 brief + review hardening list) | Status | Evidence |
@@ -144,5 +148,106 @@ Phase 2 must report any non-empty `skipped`/`withheld`/`redactions` as a **parti
 sandbox, keep dependency acquisition a separate network-enabled step, and add the JavaScript items above. Phase 4: refuse hard-link/symlink/device archive members,
 enforce upload limits, extract into a private directory. Phase 5: pin images by digest, decide whether a second backend is real before extracting an interface.
 
+## Git
+The directory was not a repository. `git init` + one local commit `Add restricted Docker sandbox foundation` (Phase 1 baseline, 27 files; `.gitignore` extended with
+`artifacts/` (a generated review zip), env/key patterns). No remote configured, nothing pushed.
+
+## Phase 2 — Validation Engine (implemented; awaiting owner review)
+
+### Requirements checklist
+| Requirement | Status | Evidence / notes |
+|---|---|---|
+| A. Semgrep integration (controlled subprocess, rules, parsing, missing tool/malformed/timeout/non-zero) | done; verified against real Semgrep 1.182.1 (`--validate` of the rules, real scan, `# nosem` ignored) | `engine/semgrep.py`, `rules/python.yml` (11 rules), `tools.py`; 22 mocked-output tests + 2 tests that run the real binary when installed |
+| B. OSV-Scanner integration (ecosystems, normalization, unavailable/timeout/invalid/error, never silently clean) | done; **verified against real osv-scanner 2.7.0** (see *Final review*) | `engine/osv.py`; mocked-output tests plus real-binary tests in `tests/test_engine_real_tools.py` |
+| C. JavaScript: `node --check`, npm lockfile scan, deferred list | done (plus a sandboxed Python syntax check, added after real-Semgrep testing) | `engine/node.py` runs in the sandbox; real-sandbox tests (2); npm scan via OSV (mocked). Deferred: installation, test runners, JS Semgrep rules |
+| D. Normalized model + verdicts | done | `engine/model.py`, `verdict.py`; 17 verdict tests; rules in README |
+| E. Integration without breaking the sandbox API | done | `engine/engine.py` uses `create_workspace`/`run_sandboxed`; no sandbox file modified; all 236 Phase 1 tests unchanged and green |
+| F. Tests and docs | done | below; README/PROJECT/IMPLEMENTATION updated |
+
+### Issues found by running the real tools (fixed in Phase 2 code)
+1. Semgrep prefixed rule ids with the rule file's directory path (`home.user….saferun.python.…`); fixed with `--no-rewrite-rule-ids` (mocked tests could not catch this).
+2. Semgrep does **not** report Python syntax errors (a file with `def f(:` is "scanned", no error), so a broken file looked clean. Added the sandboxed `python-syntax` check.
+
+### Design decisions worth reviewing
+1. **Semgrep and OSV-Scanner run on the host, against the sanitized copy** (see PROJECT.md *Validation engine* for the reasoning and mitigations). This is a
+   conscious deviation from the Phase 1 hand-off note "run analyzers inside the sandbox": no analyzer image exists locally, SafeRun does not pull images, and OSV needs network.
+   `node --check` does run in the sandbox. Decision needed from the owner: build/approve an analyzer image later, or accept host-side analyzers.
+2. Operational failures yield `WARNING`, not `FAIL`; `FAIL` is reserved for findings. `PASS` requires at least one completed analysis check and no partial scan.
+3. A non-empty `skipped`/`withheld` workspace is a partial scan (WARNING at least); withheld credential files are HIGH findings (as the Phase 1 hand-off asked).
+4. JavaScript syntax errors are MEDIUM (WARNING), not HIGH.
+
+### Phase 1 changes
+**None.** No file under `saferun/sandbox/` was modified in Phase 2. No Phase 1 defect was found.
+
+### Test results
+See the completion report in the conversation for exact commands/output; summary: final-review runs (see *Final review*): with both real tools on PATH
+`PATH="$S/osv:$PWD/.venv/bin:$PATH" SAFERUN_REQUIRE_DOCKER=1 .venv/bin/pytest -q -rs` → **396 passed, 0 skipped** (77 s); with neither on PATH
+`SAFERUN_REQUIRE_DOCKER=1 .venv/bin/pytest -q -rs` → **382 passed, 14 skipped** (all skips are real-tool tests, each reporting why) (39 s).
+Phase 1 = 236, Phase 2 = 160. Afterwards: 0 containers labelled `saferun.sandbox=1`, 0 `/tmp/saferun-ws-*`.
+
+### Unavailable / not verified in this environment
+- `osv-scanner`: not on the system PATH; a checksum-verified 2.7.0 binary lives in the session scratchpad only (see *Final review*). Real-binary tests skip visibly without it.
+- `semgrep`: available only via the project `.venv` (not on the system PATH); real-tool tests run when it is on PATH, otherwise skip visibly.
+- No network-dependent test exists; ordinary tests need neither network nor either tool.
+
+### Limitations and deferred work
+See PROJECT.md *Validation engine → Limitations*. Additionally: rule quality is unmeasured (no false-positive/negative evaluation); the verdict thresholds are policy
+choices, not validated; host-side analyzers are part of the trusted base; OSV online mode discloses dependency names/versions to OSV.dev.
+
+## Final review of Phase 2 (verification pass)
+No commit, no push, no Phase 3. No file under `saferun/sandbox/` changed.
+
+### Environment changes made in this pass
+- **osv-scanner v2.7.0** (`osv-scanner_linux_amd64` from the official GitHub release; SHA-256 checked against the release's `osv-scanner_SHA256SUMS`: OK) placed in the session
+  scratchpad `…/scratchpad/osv/` only. Not on the system PATH, nothing installed system-wide, no Docker resources touched. Test inputs were hand-written lockfiles; **no dependency was installed or built**.
+- Semgrep 1.182.1 remains in the project `.venv` (from the previous pass). The scanner contacted `api.osv.dev` (package names/versions only) during the real-tool tests.
+
+### Verified with the REAL osv-scanner 2.7.0
+| Item | Result |
+|---|---|
+| CLI flags used (`scan source`, `--format json`, `--no-resolve`, `--offline`, `--lockfile=`) | all exist in 2.7.0 (`--help` read) |
+| `--offline` | does **not** merely skip the network: it switches to local databases and fails (exit 127, "no offline version of the OSV database is available") when none are cached → reported `error`; the doc claim was right, my earlier reading of the flag was incomplete |
+| JSON shape (`results[].source.path`, `packages[].package`, `vulnerabilities[]`, `groups[].max_severity`, `aliases`, `database_specific.severity`, `affected[].ranges[].events[].fixed`) | matches the parser; real output parsed into findings with correct package/ecosystem/path, alias de-duplication, fixed versions |
+| Known vulnerable dependency | `django==2.2.0` → 43 findings (PyPI) incl. critical; `lodash 4.17.15` in `package-lock.json` → GHSA-35jh-r3h4-6jhm / CVE-2021-23337, high, fixed in 4.17.21 |
+| Clean result | `six==1.17.0` → exit 0, `{"results": []}` → `passed` |
+| Exit codes | 0 clean, 1 findings, 127 error, 128 no packages (empty lockfile → `incomplete`) |
+| Failure modes | malformed lockfile (127), missing file (127), unreachable network, `--offline` without DB, timeout, missing tool → `error`/`error`/`error`/`error`/`timeout`/`unavailable`; verdict `WARNING`, never PASS |
+| Exit 127 **with a clean-looking** `{"results": []}` (network down) | the engine checks the exit code before parsing → `error` (regression-tested against the real binary) |
+| Python/npm support | `requirements.txt` and `package-lock.json` verified. `poetry.lock`, `Pipfile.lock`, `pdm.lock`, `uv.lock`, `yarn.lock`, `pnpm-lock.yaml` are passed to the tool by name but were **not** exercised with it |
+
+### Defects found in Phase 2 code and fixed (each with regression tests, mostly against the real binaries)
+1. **Semgrep skipped files silently.** A project `.semgrepignore` hid a file containing `eval(x)` (result still `findings`/complete), and a 1.8 MB file was skipped without any error. Fix: `.semgrepignore`
+   files are removed from the analysis copy only, and every targeted Python file must appear in Semgrep's `paths.scanned`, else the check is `incomplete`.
+2. **OSV-Scanner silently skips npm lockfile entries it cannot match** (no registry `resolved` URL, or git): "found 1 package", exit 0, no results — a vulnerable package then looked clean.
+   Fix: `package-lock.json` is cross-checked (`npm_unmatched`); such entries make the check `incomplete`. Not done for yarn.lock/pnpm-lock.yaml (unverified).
+3. **Requirements variants** (`requirements-dev.txt`, …) were silently ignored → now a reported coverage gap.
+4. **Misleading error detail:** OSV-Scanner's progress lines hid its error text in `detail` → error lines are preferred.
+5. **Documentation:** `requirements.txt` had been grouped with lockfiles. Fixed everywhere: it is a *manifest/requirements file*; unpinned entries (`flask>=1.0`, verified: evaluated as exactly 1.0) are unreliable and no transitive resolution happens.
+
+### Code review notes (no defect found unless listed above)
+Subprocess: argv only, absolute exe, minimal env, own process group killed on timeout/output cap, stdin closed. Paths: tool paths accepted only as relative paths inside the copy; lockfile names
+restricted before use in `--lockfile=./…` (`:` and control characters refused). Symlinks: the Phase 1 copy contains none; `os.walk(followlinks=False)`. Cleanup: workspace deleted in `finally`; tests assert an empty workspace root;
+no leftover containers/workspaces after the full run. Verdict: no status other than `passed`/`findings` counts as completed; operational problems force `WARNING`; nothing-ran is `WARNING`.
+Residual: a cleanup failure raises instead of returning the computed report (fail loud); `yarn.lock`/`pnpm-lock.yaml` may have analogous unmatched-entry gaps; Semgrep's tolerant parser can hide
+partially-unparseable regions (syntax errors are caught separately by `python-syntax`).
+
+### Host-side analyzer risk (decision required — nothing changed)
+Semgrep and OSV-Scanner run **as the invoking user on the host** and parse files from the sanitized copy. The copy removes symlinks, special files and credential files and nothing is executed from the project,
+but a parser/memory-safety or logic bug in either tool (or a crafted file triggering excessive resource use) would run with that user's full privileges: home directory, SSH keys, the `docker` group. Limits in place:
+minimal environment, private HOME, process-group kill, 8 MiB output cap, wall-clock timeout. **Not** in place: memory/CPU/pids limits, filesystem or network confinement for the host process.
+Both tools are widely used, but "widely used" is not a security guarantee, and nothing here was assessed for exploitability.
+
+| | 1. Documented temporary host-side limitation | 2. Analyzers in a restricted container |
+|---|---|---|
+| Security | weakest: analyzer bug ⇒ user-level compromise | strong: same verified controls as the sandbox (non-root, no caps, no-new-privileges, read-only, limits, no network, no socket) |
+| Work | none (already documented) | an analyzer image (semgrep + osv-scanner, pinned by digest, built on a networked step then used offline); `run_sandboxed` today mounts only the project, so Semgrep (needs a writable cache in tmpfs) fits, but OSV needs vulnerability data |
+| OSV network | works online | the sandbox has no network by design; use `--offline` with databases downloaded by a trusted host step that never sees project input (`--download-offline-databases`), mounted read-only — needs a new read-only extra mount in the sandbox (a Phase 1 change, reviewed) |
+| Risk of the change itself | none | a new mount and image add surface; must not weaken any existing control; database freshness/size policy needed |
+| Verified here | — | **not built or tested** (no image exists; building one is a Docker change not authorised in this pass) |
+
+**Recommendation:** keep option 1 as the explicit, documented interim state for Phase 2 review, and adopt option 2 as the target before SafeRun scans genuinely untrusted uploads (Phase 4) —
+a hardened analyzer image run through the existing sandbox, with OSV databases refreshed by a separate trusted step. **Needs your decision:** (a) accept option 1 for now; (b) approve building a digest-pinned
+analyzer image and a read-only extra mount (a reviewed Phase 1 change); (c) the offline-database refresh policy; (d) whether OSV online mode (disclosing dependency names/versions to OSV.dev) is acceptable in the interim.
+
 ## Remaining
-- Phase 2: validation engine. Phases 3–5 per PROJECT.md. Nothing beyond Phase 1 has been started.
+- Phase 3 (CLI), 4 (dashboard), 5 (integration/security testing/release) per PROJECT.md. Nothing beyond Phase 2 has been started. Not started until the owner approves.

@@ -7,9 +7,13 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+analysis = ["semgrep"]   # Python static analysis; OSV-Scanner is a separate Go binary (not on PyPI)
 
 [tool.setuptools.packages.find]
 include = ["saferun*"]
+
+[tool.setuptools.package-data]
+saferun = ["engine/rules/*.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

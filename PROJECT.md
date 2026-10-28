@@ -1,8 +1,8 @@
 # SafeRun — Project
 
 Developer tool that checks AI-generated code *before* it is run or trusted. CLI + web dashboard
-share one backend, one validation engine, one sandbox. Python first; JavaScript later (the Phase 1 sandbox can already
-execute a JavaScript file in a Node.js image under identical restrictions; everything above that is later work — see *Runtime profiles*).
+share one backend, one validation engine, one sandbox. Python first; JavaScript partially (syntax check and npm-lockfile
+vulnerability scanning exist since Phase 2; installation, test runners and JS rules are later work — see *Runtime profiles*).
 
 **Non-goals:** generating/repairing code, multi-agent systems, LLM API calls, CI/CD integration (v1),
 any claim that a passing scan means the code is secure.
@@ -12,7 +12,7 @@ any claim that a passing scan means the code is secure.
 ```
 saferun/
   sandbox/     Phase 1  workspace copy + locked-down docker run   (implemented)
-  engine/      Phase 2  checkers -> normalized findings -> report (language plugins: python, later js)
+  engine/      Phase 2  checks -> normalized findings -> verdict (implemented; see *Validation engine*)
   cli/         Phase 3  `saferun scan <dir>`
   api/         Phase 4  FastAPI: upload, scan jobs, reports
 web/           Phase 4  React + Vite
@@ -26,6 +26,38 @@ preflight → create → **verify applied config, fail closed** → start → ti
 `attestation.py` (kernel-view probe inside a sandbox) · `profiles.py` (python / node images) · `config.py`
 (limits/result types). Uses the docker CLI via argument lists (no shell, no Docker SDK, no socket handed to anything
 untrusted). A future backend interface is **not** introduced in Phase 1 (see *OpenSandbox reuse assessment*).
+
+## Validation engine (Phase 2, `saferun/engine/`)
+`model.py` (Finding, CheckResult, CheckStatus, Severity, ValidationReport) · `verdict.py` (rules) · `tools.py` (controlled subprocess runner) ·
+`semgrep.py`, `osv.py`, `pysyntax.py`, `node.py` (one module per check, each `run_check(ctx) -> CheckResult`) · `engine.py` (`validate_project`) ·
+`context.py` (injectable runners for tests) · `paths.py` (untrusted-path normalisation) · `rules/python.yml` (bundled Semgrep rules).
+
+Flow: `create_workspace` (Phase 1 sanitized copy) → list files → run enabled checks (each guarded: an exception becomes an `error` result) →
+`compute_verdict` → delete the copy. The sandbox API is unchanged; the engine only *uses* `create_workspace`, `run_sandboxed` and the docker helpers.
+
+**Where each tool runs, and why.** The two syntax checks (`node --check`, Python `compile()`) run **inside the sandbox** (both images exist locally, no network needed; one run each with a fixed driver script, project code is compiled, never executed).
+Semgrep and OSV-Scanner run **on the host** against the sanitized *copy*: no sandbox image containing them exists and SafeRun never pulls images
+or builds one in this phase, and OSV-Scanner needs network access, which the sandbox deliberately lacks. They never execute project code, but they
+*parse* untrusted files, so a parser bug in those tools is an exposure the sandbox does not cover. Mitigations: argv only (no shell), absolute
+executable, minimal environment (no inherited credentials; proxy/cert variables only for OSV online mode), private `HOME`, own process group killed on
+timeout, 8 MiB output cap, local rules only (`--config <bundled file>`, no registry, metrics/version check off, `--disable-nosem` so `# nosem` in
+untrusted code cannot hide findings), copy contains no symlinks/special files/credential files. **Deferred:** a hardened analyzer image run in the
+sandbox (recommended before untrusted uploads, Phase 4; see IMPLEMENTATION.md *Host-side analyzer risk* — owner decision pending) — for a high-assurance deployment treat host-side analyzers as part of the trusted computing base.
+
+**Dependency handling.** SafeRun never installs, fetches or builds dependencies and never runs install scripts. OSV-Scanner reads dependency files only
+(`--no-resolve`): **lockfiles** (`poetry.lock`, `Pipfile.lock`, `pdm.lock`, `uv.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`) and the **manifest** `requirements.txt` (not a lockfile). Sending package names/versions to OSV.dev is the only network use (`osv_offline=True` disables it but needs locally cached databases;
+without them the tool errors and the check reports `error`). A manifest without a scannable file beside it (`package.json`, `Pipfile`, `pyproject.toml`) and requirements variants (`requirements-dev.txt`, …) are *coverage gaps*:
+status `incomplete`/`skipped`, never clean. `requirements.txt` entries not pinned with `==` are noted as not reliably matched.
+
+**Findings vs operational errors.** A finding is a signal in the project. `error`/`timeout`/`unavailable`/`skipped`/`incomplete` describe the analysis, carry no
+findings (except `incomplete`, which keeps partial results) and force at least `WARNING`. Severity mapping: Semgrep → rule's `saferun_severity` else
+ERROR/WARNING/INFO → high/medium/low; OSV → CVSS score of the vulnerability group (≥9 critical, ≥7 high, ≥4 medium, >0 low) else the database's label,
+else `unknown` (treated as medium); a JavaScript syntax error → medium (a broken file is a validation problem, not a demonstrated vulnerability); a withheld
+private key/token → high, a withheld private-mode file → low. Verdict rules: README.md / `verdict.py`. All tool-derived strings are stripped of control and
+bidi characters and length-bounded; tool-reported paths are accepted only if they are relative paths inside the copy.
+
+**Limitations.** The bundled Semgrep rules are a small starting set (11 rules, Python only) and do no taint or cross-file analysis; no JavaScript rules; Python syntax is checked with the sandbox image's Python 3.12 only (Semgrep itself tolerates and does not report syntax errors — observed with 1.182.1); OSV matches known vulnerabilities only (no malware/typosquat detection, no reachability);
+`requirements.txt` is a manifest: unpinned entries are evaluated at their lower bound and transitive dependencies are not resolved; npm lockfile entries without a registry URL are unmatchable (reported `incomplete`); unsupported file formats are not scanned; Semgrep skips files > 1 MB and these are reported `incomplete`; at most 50 lockfiles, 1000 JS files, 1000 findings per check.
 
 ## Threat model
 
@@ -115,7 +147,7 @@ seccomp filter and AppArmor profile come from the Docker daemon's defaults and a
   Containers use `saferun-` names and a `saferun.deadline` label; workspaces live in the system temp dir.
 - Images are referenced by tag but each run uses the *resolved image ID* (recorded); pinning by digest is Phase 5. Output is not terminal-escape sanitized (Phase 3).
 - Out of scope for Phase 1: side channels; archive attacks (Phase 4/5); running scanners on hostile input
-  (Phase 2, inside the sandbox); dependency installation (Phase 2, separate network-enabled step).
+  (Phase 2 runs Semgrep/OSV-Scanner on the host against the sanitized copy, see *Validation engine*); dependency installation (deferred, separate network-enabled step).
 
 ## Runtime profiles and JavaScript
 A *profile* (`profiles.py`) is just a name for an image plus its interpreter; every profile gets exactly the same
@@ -125,8 +157,10 @@ explicitly: `docker pull node:22-slim`).
 | JavaScript / Node.js | Status |
 |---|---|
 | Run a `.js` file in the hardened sandbox (non-root, no network, read-only fs, limits, timeout, output cap, OOM kill, symlink/secret/hard-link handling) | **Implemented and tested** (11 tests + kernel-view attestation on the Node image) |
-| Dependency acquisition (`npm ci --ignore-scripts` in a separate, allowlisted-network sandbox), `package.json`/lockfile handling | **Not implemented** (Phase 2): needs the network-enabled acquisition phase |
-| Test-runner integration (`node --test`, jest, …), syntax check (`node --check`), Semgrep JS rules, OSV for npm, report parsing | **Not implemented** (Phase 2) |
+| Syntax check (`node --check` on every `.js/.mjs/.cjs`, one sandbox run, fixed driver, no project code executed) | **Implemented** (Phase 2; real-sandbox tests) |
+| npm vulnerability scan from `package-lock.json` / `yarn.lock` / `pnpm-lock.yaml` via OSV-Scanner | **Implemented**; `package-lock.json` verified with the real osv-scanner 2.7.0 (finding, clean, error paths); `yarn.lock`/`pnpm-lock.yaml` passed to the tool but not tested with it |
+| Dependency acquisition (`npm ci --ignore-scripts` in a separate, allowlisted-network sandbox) | **Deferred**: needs a network-enabled acquisition phase; SafeRun installs nothing |
+| Test-runner integration (`node --test`, jest, …), Semgrep JS rules, ESLint/TypeScript | **Deferred** (not required for Phase 2) |
 | Node version selection, digest pinning, V8 heap vs cgroup tuning, Alpine/distroless images | **Not implemented / untested** |
 A JavaScript *SDK that controls a sandbox* (as in OpenSandbox) is not a sandbox that runs JavaScript; this table concerns
 only execution inside SafeRun's own Docker sandbox.
@@ -166,8 +200,8 @@ verified code, and the only second backend considered (OpenSandbox) failed the r
 
 ## Phases
 
-1. Environment + sandbox PoC — **implemented, awaiting owner approval** (see IMPLEMENTATION.md)
-2. Validation engine (syntax, Semgrep, dependency vulns, normalized report, tests)
+1. Environment + sandbox PoC — **approved as the Phase 2 baseline** (a milestone approval, not a security certification)
+2. Validation engine (syntax, Semgrep, dependency vulns, normalized report, tests) — **implemented, awaiting owner review**
 3. CLI
 4. Web dashboard (upload limits, secure handling)
 5. Integration, security testing, release docs
