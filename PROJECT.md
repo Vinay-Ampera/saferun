@@ -13,7 +13,7 @@ any claim that a passing scan means the code is secure.
 saferun/
   sandbox/     Phase 1  workspace copy + locked-down docker run   (implemented)
   engine/      Phase 2  checks -> normalized findings -> verdict (implemented; see *Validation engine*)
-  cli/         Phase 3  `saferun scan <dir>`
+  cli.py       Phase 3  `saferun scan <dir>` (implemented; see docs/cli.md)
   api/         Phase 4  FastAPI: upload, scan jobs, reports
 web/           Phase 4  React + Vite
 ```
@@ -53,7 +53,7 @@ status `incomplete`/`skipped`, never clean. `requirements.txt` entries not pinne
 findings (except `incomplete`, which keeps partial results) and force at least `WARNING`. Severity mapping: Semgrep → rule's `saferun_severity` else
 ERROR/WARNING/INFO → high/medium/low; OSV → CVSS score of the vulnerability group (≥9 critical, ≥7 high, ≥4 medium, >0 low) else the database's label,
 else `unknown` (treated as medium); a JavaScript syntax error → medium (a broken file is a validation problem, not a demonstrated vulnerability); a withheld
-private key/token → high, a withheld private-mode file → low. Verdict rules: README.md / `verdict.py`. All tool-derived strings are stripped of control and
+private key/token → high, a withheld private-mode file → low. Verdict rules: [docs/engine.md](docs/engine.md) / `verdict.py`. All tool-derived strings are stripped of control and
 bidi characters and length-bounded; tool-reported paths are accepted only if they are relative paths inside the copy.
 
 **Limitations.** The bundled Semgrep rules are a small starting set (11 rules, Python only) and do no taint or cross-file analysis; no JavaScript rules; Python syntax is checked with the sandbox image's Python 3.12 only (Semgrep itself tolerates and does not report syntax errors — observed with 1.182.1); OSV matches known vulnerabilities only (no malware/typosquat detection, no reachability);
@@ -145,7 +145,7 @@ seccomp filter and AppArmor profile come from the Docker daemon's defaults and a
   limit is `timeout_s + container_grace_s`. Both are best-effort against a hung Docker daemon.
 - **Orphan recovery is explicit**: nothing calls `reap_orphans()` automatically yet (CLI/API startup will).
   Containers use `saferun-` names and a `saferun.deadline` label; workspaces live in the system temp dir.
-- Images are referenced by tag but each run uses the *resolved image ID* (recorded); pinning by digest is Phase 5. Output is not terminal-escape sanitized (Phase 3).
+- Images are referenced by tag but each run uses the *resolved image ID* (recorded); pinning by digest is Phase 5. Sandbox output is not terminal-escape sanitized by the sandbox; the Phase 3 CLI strips control/escape characters from everything it prints.
 - Out of scope for Phase 1: side channels; archive attacks (Phase 4/5); running scanners on hostile input
   (Phase 2 runs Semgrep/OSV-Scanner on the host against the sanitized copy, see *Validation engine*); dependency installation (deferred, separate network-enabled step).
 
@@ -201,8 +201,8 @@ verified code, and the only second backend considered (OpenSandbox) failed the r
 ## Phases
 
 1. Environment + sandbox PoC — **approved as the Phase 2 baseline** (a milestone approval, not a security certification)
-2. Validation engine (syntax, Semgrep, dependency vulns, normalized report, tests) — **implemented, awaiting owner review**
-3. CLI
+2. Validation engine (syntax, Semgrep, dependency vulns, normalized report, tests) — **committed (`088b279`)**
+3. CLI — **implemented, awaiting owner review**
 4. Web dashboard (upload limits, secure handling)
 5. Integration, security testing, release docs
 

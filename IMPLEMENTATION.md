@@ -134,7 +134,7 @@ Apache-2.0; no code copied ⇒ no §4 obligations; no new SafeRun dependency. Li
 - `/proc`/`/sys` expose host details (kernel, CPU, host workspace path in `mountinfo`); file modes are flattened to 0644/0755 (exec bits lost).
 - Behaviour under a truly hung daemon, a full disk and extreme load is untested; the host timeout excludes `docker create` time; Docker/`timeout` failures after start look
   like exit 125–127 (stderr untrusted). CPU throttling accuracy is not measured (only the quota). Hard-link detection relies on `st_nlink` (verified on ext4).
-- Images must provide `timeout` and `sh`; verified on two images. Output is not sanitized for terminals (Phase 3). `reap_orphans()` is not called automatically.
+- Images must provide `timeout` and `sh`; verified on two images. Sandbox output is not sanitized for terminals by the sandbox itself; the Phase 3 CLI sanitizes what it prints. `reap_orphans()` is not called automatically.
 - The remote-endpoint refusal is exercised through `DOCKER_HOST` only (the context-based branch runs on every real run for the default context, but a remote *context* was not tested).
 - Secret values live in host memory during a run. Submounts inside a scanned directory are not handled specially.
 
@@ -160,9 +160,9 @@ The directory was not a repository. `git init` + one local commit `Add restricte
 | A. Semgrep integration (controlled subprocess, rules, parsing, missing tool/malformed/timeout/non-zero) | done; verified against real Semgrep 1.182.1 (`--validate` of the rules, real scan, `# nosem` ignored) | `engine/semgrep.py`, `rules/python.yml` (11 rules), `tools.py`; 22 mocked-output tests + 2 tests that run the real binary when installed |
 | B. OSV-Scanner integration (ecosystems, normalization, unavailable/timeout/invalid/error, never silently clean) | done; **verified against real osv-scanner 2.7.0** (see *Final review*) | `engine/osv.py`; mocked-output tests plus real-binary tests in `tests/test_engine_real_tools.py` |
 | C. JavaScript: `node --check`, npm lockfile scan, deferred list | done (plus a sandboxed Python syntax check, added after real-Semgrep testing) | `engine/node.py` runs in the sandbox; real-sandbox tests (2); npm scan via OSV (mocked). Deferred: installation, test runners, JS Semgrep rules |
-| D. Normalized model + verdicts | done | `engine/model.py`, `verdict.py`; 17 verdict tests; rules in README |
+| D. Normalized model + verdicts | done | `engine/model.py`, `verdict.py`; 17 verdict tests; rules in docs/engine.md |
 | E. Integration without breaking the sandbox API | done | `engine/engine.py` uses `create_workspace`/`run_sandboxed`; no sandbox file modified; all 236 Phase 1 tests unchanged and green |
-| F. Tests and docs | done | below; README/PROJECT/IMPLEMENTATION updated |
+| F. Tests and docs | done | below; README/PROJECT/IMPLEMENTATION updated (since reorganized into docs/) |
 
 ### Issues found by running the real tools (fixed in Phase 2 code)
 1. Semgrep prefixed rule ids with the rule file's directory path (`home.user….saferun.python.…`); fixed with `--no-rewrite-rule-ids` (mocked tests could not catch this).
@@ -250,4 +250,15 @@ a hardened analyzer image run through the existing sandbox, with OSV databases r
 analyzer image and a read-only extra mount (a reviewed Phase 1 change); (c) the offline-database refresh policy; (d) whether OSV online mode (disclosing dependency names/versions to OSV.dev) is acceptable in the interim.
 
 ## Remaining
-- Phase 3 (CLI), 4 (dashboard), 5 (integration/security testing/release) per PROJECT.md. Nothing beyond Phase 2 has been started. Not started until the owner approves.
+- Phase 3 (CLI) is implemented but not yet reviewed/committed (see below). Phases 4 (dashboard), 5 (integration/security testing/release) per PROJECT.md. Nothing beyond Phase 2 has been started. Not started until the owner approves.
+
+## Phase 3: CLI (implemented, awaiting review — not committed)
+`saferun/cli.py` (+ `saferun/__main__.py`, console script `saferun` in pyproject.toml): `saferun scan PATH [--format text|json] [--timeout S]
+[--osv-offline] [--no-python-syntax] [--no-python-analysis] [--no-dependency-scan] [--no-javascript-check]`. It calls `validate_project` and renders
+the report; it contains no validation logic and no sandbox/Docker code, and Phase 1 and `saferun/engine/` are unchanged. Exit codes: 0 PASS, 1 FAIL,
+2 WARNING (including every incomplete scan), 64 usage/bad path, 70 fatal (SandboxError or internal error; no verdict, nothing on stdout), 130 interrupted.
+argparse's default usage exit code 2 is overridden to 64 so that 2 only ever means WARNING.
+- Defaults unchanged: online OSV remains the engine default. The CLI prints a disclosure notice on stderr when the dependency scan will contact OSV.dev, and exposes the existing `osv_offline` option as `--osv-offline`.
+- Terminal safety: all text rendered from reports is passed through `clean_text` again.
+- Tests: `tests/test_cli.py` (stubbed engine for exit codes/arguments/errors; real engine with checks disabled or tools missing; one Docker test through the real sandbox).
+- Limitations: one subcommand; no config file, output file, color, or progress output; `--timeout` is per tool run, not total; host-side analyzer risk unchanged (accepted interim limitation).
