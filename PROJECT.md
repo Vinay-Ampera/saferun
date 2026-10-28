@@ -14,8 +14,8 @@ saferun/
   sandbox/     Phase 1  workspace copy + locked-down docker run   (implemented)
   engine/      Phase 2  checks -> normalized findings -> verdict (implemented; see *Validation engine*)
   cli.py       Phase 3  `saferun scan <dir>` (implemented; see docs/cli.md)
-  api/         Phase 4  FastAPI: upload, scan jobs, reports
-web/           Phase 4  React + Vite
+  api/         Phase 4  FastAPI: hostile-ZIP extractor, bounded job runner (runs the CLI), loopback guard (implemented; docs/api.md)
+web/           Phase 4  React + Vite dashboard (implemented; secondary interface)
 ```
 
 Sandbox (`saferun/sandbox/`): `workspace.py` (sanitized temp copy) · `docker.py` (defensive CLI wrappers, daemon
@@ -101,6 +101,14 @@ seccomp filter and AppArmor profile come from the Docker daemon's defaults and a
 | † Concurrent runs (6 in parallel) are isolated and fully cleaned up | test_concurrent_runs_are_isolated_and_all_cleaned_up |
 | † Both cleanup steps always run; original exception preserved (cleanup errors added as notes) | test_cleanup.py |
 
+## Web dashboard threat model (Phase 4, summary; details in docs/api.md)
+Attacker: anyone who can reach the dashboard port, supplying a hostile ZIP. Scope: **loopback only**, enforced in code (launcher refuses non-loopback binds; middleware refuses
+non-loopback peers, foreign Host headers and cross-origin writes). Archives are validated whole and rejected on any unsafe member before extraction (traversal, absolute paths,
+symlinks/devices, duplicates/collisions, bombs, overlaps, size/count/depth limits), extracted fd-relative into a private 0700 directory, and scanned by the existing CLI in a
+child process with an allow-listed environment, a hard deadline (process-group kill) and guaranteed cleanup. Uploaded code is never executed. **Not mitigated:** Semgrep/OSV-Scanner
+parse hostile files on the host with the server user's privileges (see *Host-side analyzer risk* in IMPLEMENTATION.md) — the reason remote/untrusted use is unsupported; no authentication;
+local users can use the port.
+
 ## Operational assumptions and known exposures (read before relying on SafeRun)
 
 - **`docker` binary, `PATH` and the local daemon are trusted.** The `docker` CLI is resolved from `PATH` to an
@@ -143,7 +151,7 @@ seccomp filter and AppArmor profile come from the Docker daemon's defaults and a
   stderr as trusted. Images must provide `timeout` (coreutils/busybox) and `sh`; verified for the two profiles only.
 - **Timeouts:** host-side limit is wall-clock from `docker start` (create time excluded); the container-side
   limit is `timeout_s + container_grace_s`. Both are best-effort against a hung Docker daemon.
-- **Orphan recovery is explicit**: nothing calls `reap_orphans()` automatically yet (CLI/API startup will).
+- **Orphan recovery is explicit**: the CLI does not call `reap_orphans()`; the Phase 4 server does at startup and after a killed job.
   Containers use `saferun-` names and a `saferun.deadline` label; workspaces live in the system temp dir.
 - Images are referenced by tag but each run uses the *resolved image ID* (recorded); pinning by digest is Phase 5. Sandbox output is not terminal-escape sanitized by the sandbox; the Phase 3 CLI strips control/escape characters from everything it prints.
 - Out of scope for Phase 1: side channels; archive attacks (Phase 4/5); running scanners on hostile input
@@ -202,8 +210,8 @@ verified code, and the only second backend considered (OpenSandbox) failed the r
 
 1. Environment + sandbox PoC — **approved as the Phase 2 baseline** (a milestone approval, not a security certification)
 2. Validation engine (syntax, Semgrep, dependency vulns, normalized report, tests) — **committed (`088b279`)**
-3. CLI — **implemented, awaiting owner review**
-4. Web dashboard (upload limits, secure handling)
+3. CLI — **committed (`a9ea5dc`)**; the primary product
+4. Web dashboard (upload limits, secure handling) — **implemented, awaiting owner review (uncommitted)**; local/loopback-only demonstration interface; remote use needs isolated analyzers first
 5. Integration, security testing, release docs
 
 A phase starts only after the previous one's acceptance criteria are met and approved.

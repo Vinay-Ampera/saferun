@@ -152,7 +152,7 @@ enforce upload limits, extract into a private directory. Phase 5: pin images by 
 The directory was not a repository. `git init` + one local commit `Add restricted Docker sandbox foundation` (Phase 1 baseline, 27 files; `.gitignore` extended with
 `artifacts/` (a generated review zip), env/key patterns). No remote configured, nothing pushed.
 
-## Phase 2 — Validation Engine (implemented; awaiting owner review)
+## Phase 2 — Validation Engine (committed `088b279`)
 
 ### Requirements checklist
 | Requirement | Status | Evidence / notes |
@@ -249,10 +249,94 @@ Both tools are widely used, but "widely used" is not a security guarantee, and n
 a hardened analyzer image run through the existing sandbox, with OSV databases refreshed by a separate trusted step. **Needs your decision:** (a) accept option 1 for now; (b) approve building a digest-pinned
 analyzer image and a read-only extra mount (a reviewed Phase 1 change); (c) the offline-database refresh policy; (d) whether OSV online mode (disclosing dependency names/versions to OSV.dev) is acceptable in the interim.
 
-## Remaining
-- Phase 3 (CLI) is implemented but not yet reviewed/committed (see below). Phases 4 (dashboard), 5 (integration/security testing/release) per PROJECT.md. Nothing beyond Phase 2 has been started. Not started until the owner approves.
+## Phase 4 — Web dashboard: revised plan (2026-10-29)
 
-## Phase 3: CLI (implemented, awaiting review — not committed)
+**Priorities (owner):** the CLI stays the primary product; the dashboard is a secondary, professional-looking *demonstration* interface for
+verification and validation. No public deployment, no online code execution, no separate validation implementation: the server runs the existing
+`saferun scan --format json` as a subprocess and relays the engine's report unchanged. CLI, exit codes, report schema, engine and sandbox are not modified.
+
+**State found at the start of this revision (reviewed, nothing reset):** HEAD `a9ea5dc` (Phase 3 CLI committed); uncommitted and new: `saferun/api/` (extractor only)
+and `tests/test_archive.py` (101 tests, mutation-checked). No API, no frontend, no docs for Phase 4. README/PROJECT still said Phase 3 was "awaiting review".
+The "interface reference images" mentioned by the owner are **not available in the repository or the project folder**; the dashboard styling is therefore
+an original, neutral professional design and has not been matched to any reference.
+
+**Deviations from the first plan, and why**
+| Plan said | Now | Reason |
+|---|---|---|
+| bad archives answered 422 at upload | upload is streamed to a temp file; extraction runs in the single worker and a bad archive becomes job state `rejected` (with the stable `ArchiveError` code) | bounds concurrent extraction (CPU/disk) to one; the POST stays cheap |
+| fastapi 0.162.0 | fastapi **0.140.13** | 0.162.0 requires `opentelemetry-api>=1.44`, Semgrep pins `~=1.37`; installing it broke the venv's Semgrep (repaired; `pip check` clean). A dry run had not shown the conflict |
+| sweeper for leftovers "in step 2" | startup sweep of `saferun-up-*` dirs / `saferun-upl-*` files by age + owner | the extractor cannot clean up after SIGKILL |
+
+**Execution units** (each: implement → run its tests → review the diff)
+1. Secure ZIP extraction + adversarial tests — **done** (`saferun/api/archive.py`, `tests/test_archive.py`).
+2. Bounded job runner (`saferun/api/jobs.py`): one worker, queue of 4, per-job deadline with process-group kill, allow-listed worker environment, cleanup in `finally`, startup sweep + `reap_orphans()`.
+3. Validation API (`saferun/api/app.py`): raw-ZIP upload with streaming size cap, scan status/report, delete, health; guard middleware (loopback client, Host allow-list, custom header + Origin check, security headers); no docs endpoints.
+4. Application-enforced loopback (`saferun/api/server.py`): the launcher refuses any non-loopback bind; the middleware independently refuses non-loopback peers.
+5. React + Vite dashboard (`web/`): upload, OSV mode with privacy disclosure, verdict, check coverage, findings, gaps; Vitest tests driven by a Python-generated golden report fixture.
+6. Docs, end-to-end test through real Docker, parity test against the CLI, security self-review, full regression.
+
+**Host-side analyzer risk (Semgrep/OSV-Scanner on the host):** *not solved.* It is handled by policy: remote/untrusted uploads are **not permitted** — the application refuses
+non-loopback binds and non-loopback peers. Isolated analyzers (hardened image run through the sandbox, offline OSV databases) remain the prerequisite for any wider exposure.
+
+## Phase 4 — implementation status (awaiting owner review; nothing committed)
+Documentation of the real implementation: [docs/api.md](docs/api.md). The CLI, the engine and the sandbox are **unchanged** (`git diff` on `saferun/cli.py`, `saferun/engine/`, `saferun/sandbox/` is empty).
+
+| Unit | Files | Evidence |
+|---|---|---|
+| 1 ZIP extractor | `saferun/api/archive.py` | `tests/test_archive.py` — 101 tests; 33 individual controls disabled in a scratch copy, 30 caught, 3 survivors are redundant defences (NUL byte also caught as control char; absolute path also caught as empty component; early end-record entry-count check also caught by the later one) |
+| 2 Job runner | `saferun/api/jobs.py` | `tests/test_api_jobs.py` — 37 tests incl. real process-group kill of a grandchild, output flood, env allow-list against a real child, sweeper with a symlink decoy |
+| 3 API + guard | `saferun/api/app.py`, `guard.py` | `tests/test_api_app.py` — 37 tests (limits, lifecycle, guards, headers, static serving, slow-upload and oversize pre-read at ASGI level) |
+| 4 Loopback enforcement | `saferun/api/server.py`, `guard.py` | `tests/test_api_server.py` — 65 tests (bind validation table, launcher refuses and never starts uvicorn, env vars cannot override, real-process refusal of `0.0.0.0`) |
+| 5 Dashboard | `web/` (React 19, Vite 8, plain JavaScript/JSX, plain CSS; component folders, see docs/api.md) | `npm test` — 23 tests (Vitest/jsdom) driven by `web/src/fixtures/report.json`, generated from the real engine model and pinned by `tests/test_api_schema_fixture.py` (2 tests) |
+| 6 End to end | `tests/test_api_e2e.py` | 4 Docker tests: upload → extraction → real CLI → real sandbox + Semgrep; API report **equals** the CLI's report for the same archive; hostile archive rejected; no containers left |
+
+Mutation checks on units 2–4: 36 controls disabled one at a time; 33 caught, 3 survivors: Host-regex looseness (a second strict check follows), sweeper ownership check (needs a second OS user to test),
+and the Content-Length pre-check — the last one **was a real gap**, a test now proves the body is not read. Real bugs found by the tests while building: (1) a job was published as `done` *before* its
+upload/extraction directory were deleted (race seen as a flaky test) — fixed by publishing after cleanup; (2) installing the newest fastapi broke the venv's Semgrep (see deviations table).
+
+Full regression (this host, Docker up, Semgrep in `.venv`, **OSV-Scanner not installed**): `PATH=".venv/bin:$PATH" SAFERUN_REQUIRE_DOCKER=1 .venv/bin/pytest -q -rs` → **664 passed, 9 skipped** at the time of the first Phase 4 pass (all 9 are the real OSV-Scanner tests). After the final security review: **674 passed, 9 skipped** without osv-scanner, and **683 passed, 0 skipped** with the real osv-scanner 2.7.0 on PATH (network tests contacted api.osv.dev). Phase 4 contributes ~260 of them (`tests/test_archive.py` 104, `test_api_app.py` 40, `test_api_jobs.py` 37, `test_api_server.py` 65, `test_api_osv_plumbing.py` 4, `test_api_e2e.py` 4, `test_api_schema_fixture.py` 2). Before the run: 0 `saferun-*` temp entries and 0 sandbox containers; after: the same.
+Live check: the real server was started on 127.0.0.1, `curl`ed (health, headers, forged Host, missing header, foreign Origin, a real upload → FAIL with Semgrep and the sandboxed syntax check reporting), and stopped.
+
+**Not verified / limitations**
+- The dashboard was **not inspected in a real browser** (component tests under jsdom and `vite build` only). The task's interface reference images were not available; the styling is original.
+- OSV online/offline were not exercised through the API (OSV-Scanner is not installed here); `osv=disabled` was, and the mapping to CLI flags is unit-tested.
+- Host-side analyzer risk remains as documented. No authentication. Loopback is enforced in the launcher and middleware, but any local user can reach the port. Reports live in memory only.
+- Behaviour under a truly stalled disk, very large concurrent uploads and a hung Docker daemon is untested (the job deadline and the pre-start checks are tested with fakes).
+- The `saferun-up-*` sweep trusts file mtime and ownership; a SIGKILLed server leaves its files until the next start.
+- `fastapi` is pinned `<0.141` (newer releases require `opentelemetry-api>=1.44`, Semgrep needs 1.37). Starlette emits a deprecation warning that its `TestClient` will want `httpx2`.
+- Frontend dependency tree: 94 packages installed with `--ignore-scripts`; `npm audit` reported 0 known vulnerabilities at install time (not a guarantee).
+
+## Phase 4 — final security review (uncommitted changes; 2026-10-29)
+Scope: ZIP extraction, API/guard, job isolation, timeouts, cleanup, dependency compatibility. The CLI, engine and sandbox were not changed.
+
+**Defects found and fixed (each with a regression test that failed before the fix)**
+| # | Defect | Fix | Test |
+|---|---|---|---|
+| 1 | The entry cap trusted the end record's count; `zipfile` builds one `ZipInfo` per central-directory record, so a ≤25 MiB archive with a lying count (claims 1, holds ~500 000 records) could allocate hundreds of MiB | SafeRun walks and counts the central directory itself first (records must tile it exactly); ZIP64 end-record markers are refused | `test_central_directory_is_walked_and_counted_before_zipfile_builds_objects` (asserts `ZipFile` is never constructed), `…zip64…`, `…does_not_end_at_the_end_record…` |
+| 2 | Capacity counted jobs only: any number of concurrent slow uploads each held up to 25 MiB of temp file for 120 s (slowloris / disk exhaustion) | uploads in flight count against the 5 slots (429 beyond); `limit_concurrency=32` and a small header-size cap in the launcher | `test_concurrent_stalled_uploads_are_bounded`, `test_uploads_in_flight_are_released_after_errors` |
+| 3 | `created_at` in job responses was a monotonic-clock value, not a timestamp | wall-clock `created_wall` reported; monotonic kept for TTL | `test_created_at_is_a_wall_clock_timestamp` |
+| 4 | Dashboard requested `/favicon.ico` (404 in the console) | inline `data:` icon (CSP-compatible) | seen in the real-browser run |
+| 5 | Cosmetic: "0 error(s)" wording, short paths wrapping character by character | text and CSS fixed | seen in screenshots |
+(Earlier in Phase 4: job published before cleanup; fastapi/Semgrep conflict — see above.)
+
+**Verified**
+- Clean install: a pristine copy of the tree, **non-editable** install into a fresh virtualenv with `.[dev,web,analysis]`: fastapi 0.140.13, starlette 1.10.0, uvicorn 0.54.0, semgrep 1.182.1, opentelemetry-api 1.37.0; `pip check` → "No broken requirements found"; the registered `saferun-web` script runs and refuses `--host 0.0.0.0` (exit 64); the 251 Phase 4 Python tests pass against the installed package. Frontend: `npm ci --ignore-scripts` from the lockfile in a clean copy, 23 tests, `vite build`, `npm audit` → 0 vulnerabilities.
+- OSV through the real server with the real osv-scanner 2.7.0 (binary from an earlier session's scratchpad; its SHA-256 matches the release `SHA256SUMS` stored beside it, not re-verified against upstream today): online → 43 findings, FAIL; offline without databases → `error`, WARNING; disabled → `skipped`, WARNING. No host paths in reports (checked in offline and online modes; asserted in the e2e test).
+- Real Google Chrome 153 (headless, scripted with playwright-core from the scratchpad, system Chrome, no download): upload → verdict FAIL with 5 checks and 45 findings rendered; severity filter; dark mode; 390 px viewport without horizontal overflow; **no CSP violations and no console errors/warnings** after the favicon fix; a member named `<img src=x onerror=window.__pwned=1>.py` rendered as inert text (no `<img>`, handler not run); a symlink archive shown as "Archive refused"; a page on another loopback origin could not create a job (simple `text/plain` POST, `application/zip` + custom header preflight, cross-origin read, `localhost` name) — the server's queue/stored-result counters showed only the intended scans.
+
+**Unresolved risks (not fixed)**
+1. **Host-side Semgrep/OSV-Scanner parse hostile files as the server user** (typically `docker` group). Contained only by policy: loopback-only, enforced in code. Not safe for untrusted or remote users until the analyzers run isolated (Phase 5).
+2. No authentication; any local OS user can use the port and, knowing an ID, read a result.
+3. **OSV online sends package names/versions to OSV.dev** by default; offline needs cached databases and otherwise yields WARNING.
+4. Stopping the server mid-scan leaves that worker running until its own timeouts and its extraction directory until the next startup sweep (age ≥ 40 min). A SIGKILLed server likewise.
+5. The sweeper's ownership check cannot be tested without a second OS user; the Docker daemon being hung/disk-full paths are tested with fakes only; the 408 timeout covers uploads only.
+6. Chrome only (one version); no accessibility audit; reference images unavailable.
+7. Starlette's `TestClient` deprecation warning (httpx → httpx2) will need attention on a future upgrade; fastapi is capped `<0.141` because of Semgrep's opentelemetry pin.
+
+## Remaining
+- Phase 3 (CLI) is committed. Phase 4 (local dashboard) is implemented and **uncommitted, awaiting owner review** (see *Phase 4 — implementation status*). Phase 5 (integration/security testing/release, isolated analyzers, digest pinning) is not started; it starts only after the owner approves Phase 4.
+
+## Phase 3: CLI (committed `a9ea5dc`)
 `saferun/cli.py` (+ `saferun/__main__.py`, console script `saferun` in pyproject.toml): `saferun scan PATH [--format text|json] [--timeout S]
 [--osv-offline] [--no-python-syntax] [--no-python-analysis] [--no-dependency-scan] [--no-javascript-check]`. It calls `validate_project` and renders
 the report; it contains no validation logic and no sandbox/Docker code, and Phase 1 and `saferun/engine/` are unchanged. Exit codes: 0 PASS, 1 FAIL,
