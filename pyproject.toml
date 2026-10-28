@@ -1,0 +1,16 @@
+[project]
+name = "saferun"
+version = "0.0.1"
+description = "Secure verification of AI-generated code"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["saferun*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["docker: requires a working Docker daemon and the sandbox image"]
