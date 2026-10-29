@@ -14,6 +14,7 @@ print([(c.name, c.state) for c in r.controls])   # verified / violated / unavail
 from saferun.sandbox.attestation import attest
 print(attest(NODE.image).ok)                      # kernel-view check from inside a sandbox (one short container run)
 ```
+- `run_sandboxed(..., readonly_mounts=((host_dir, "/name"),))` (Phase 5B) adds read-only bind mounts (existing real directories only; fresh top-level target name, never a system path). The applied mount set is verified exactly after `docker create`; the network stays off. Used for the offline OSV data.
 - The project is copied (symlinks and special files dropped, external hard links skipped, credential-like files withheld,
   concurrent modification detected) and mounted read-only; no network; non-root; all capabilities dropped; read-only root.
 - Before any code starts, Docker's *applied* configuration is verified and the run is refused on any deviation; the daemon

@@ -278,7 +278,7 @@ an original, neutral professional design and has not been matched to any referen
 **Host-side analyzer risk (Semgrep/OSV-Scanner on the host):** *not solved.* It is handled by policy: remote/untrusted uploads are **not permitted** — the application refuses
 non-loopback binds and non-loopback peers. Isolated analyzers (hardened image run through the sandbox, offline OSV databases) remain the prerequisite for any wider exposure.
 
-## Phase 4 — implementation status (awaiting owner review; nothing committed)
+## Phase 4 — implementation status (committed `e4bceef`)
 Documentation of the real implementation: [docs/api.md](docs/api.md). The CLI, the engine and the sandbox are **unchanged** (`git diff` on `saferun/cli.py`, `saferun/engine/`, `saferun/sandbox/` is empty).
 
 | Unit | Files | Evidence |
@@ -306,7 +306,7 @@ Live check: the real server was started on 127.0.0.1, `curl`ed (health, headers,
 - `fastapi` is pinned `<0.141` (newer releases require `opentelemetry-api>=1.44`, Semgrep needs 1.37). Starlette emits a deprecation warning that its `TestClient` will want `httpx2`.
 - Frontend dependency tree: 94 packages installed with `--ignore-scripts`; `npm audit` reported 0 known vulnerabilities at install time (not a guarantee).
 
-## Phase 4 — final security review (uncommitted changes; 2026-10-29)
+## Phase 4 — final security review (2026-10-29; since committed as `e4bceef`)
 Scope: ZIP extraction, API/guard, job isolation, timeouts, cleanup, dependency compatibility. The CLI, engine and sandbox were not changed.
 
 **Defects found and fixed (each with a regression test that failed before the fix)**
@@ -334,7 +334,7 @@ Scope: ZIP extraction, API/guard, job isolation, timeouts, cleanup, dependency c
 7. Starlette's `TestClient` deprecation warning (httpx → httpx2) will need attention on a future upgrade; fastapi is capped `<0.141` because of Semgrep's opentelemetry pin.
 
 ## Remaining
-- Phase 3 (CLI) is committed. Phase 4 (local dashboard) is implemented and **uncommitted, awaiting owner review** (see *Phase 4 — implementation status*). Phase 5 (integration/security testing/release, isolated analyzers, digest pinning) is not started; it starts only after the owner approves Phase 4.
+- Phase 3 (CLI) is committed. Phase 4 (local dashboard) is **committed and pushed (`e4bceef`)** (see *Phase 4 — implementation status*). Phase 5 (integration/security testing/release, isolated analyzers, digest pinning) is in planning; implementation starts only after the owner approves the plan.
 
 ## Phase 3: CLI (committed `a9ea5dc`)
 `saferun/cli.py` (+ `saferun/__main__.py`, console script `saferun` in pyproject.toml): `saferun scan PATH [--format text|json] [--timeout S]
@@ -346,3 +346,65 @@ argparse's default usage exit code 2 is overridden to 64 so that 2 only ever mea
 - Terminal safety: all text rendered from reports is passed through `clean_text` again.
 - Tests: `tests/test_cli.py` (stubbed engine for exit codes/arguments/errors; real engine with checks disabled or tools missing; one Docker test through the real sandbox).
 - Limitations: one subcommand; no config file, output file, color, or progress output; `--timeout` is per tool run, not total; host-side analyzer risk unchanged (accepted interim limitation).
+
+## Phase 5A: image digest pinning and image build recipe (implemented, uncommitted, awaiting owner review)
+New: `saferun/sandbox/images.py` (pins, pure helpers), `saferun/sandbox/verify.py`, `saferun verify-images` in `saferun/cli.py`, `docker/analyzer/` (Dockerfile,
+`fetch_verified.py`, hash-locked `semgrep-requirements.txt`, `build.sh`, README), `tests/test_image_pins.py` (30 tests).
+Changed: `profiles.py`/`config.py` use the pinned references; `docker.resolve_image` verifies `RepoDigests` for digest references; docs and the dashboard Guide page
+show digest pulls. Engine logic, report schema, scan exit codes and the sandbox runner are untouched; the only engine edit is display-only (`tool` strings use `RuntimeProfile.label`, so they read exactly as before pinning).
+Not done on purpose: the analyzer image is not built or used (Phase 5B); no network/registry call at run time; `verify-images` is local-only (no staleness check against the registry).
+
+## Phase 5B (analyzer isolation) and 5C (adversarial testing): implemented, uncommitted, awaiting owner review
+**Built for real:** `PYTHON=.venv/bin/python docker/analyzer/build.sh` -> `saferun-analyzer:local`, image ID recorded in `~/.local/share/saferun/analyzer-image-id`. The Dockerfile `RUN` chain
+executed in the digest-pinned base (hash-locked Semgrep 1.182.1 wheels, checksum-verified OSV-Scanner 2.7.0, in-image version checks, rules sha256 check). Inside the container: `semgrep --version`
+-> 1.182.1, `osv-scanner --version` -> 2.7.0, uid 65534.
+**Code:** `sandbox/analyzer.py` (lock + label verification), `engine/analyzer.py` (container runner), `engine/osvdb.py` (offline data, `saferun osv-db update`), `run_sandboxed(readonly_mounts=...)` with exact
+mount-set verification, Semgrep/OSV checks rewritten to use the container only (no `run_tool`/`find_tool`), `saferun verify-images` now includes the analyzer (`--base-only` for the base images),
+API: `osv=online` -> 422, default `offline`, health reports `analyzer`; dashboard: no online option. CLI `--osv-offline` kept as a no-op, the OSV network notice removed.
+**Behaviour changes (deliberate, required by "offline by default / no host fallback"):** no per-scan online OSV; no OSV notice on stderr; projects with lockfiles and no local OSV data give WARNING (error) not findings;
+Semgrep/OSV on the host are no longer used or needed; the `semgrep`/`osv_scanner` health keys now mean "analyzer image verified". Unchanged: scan exit codes, report schema (key sets asserted), verdict rules, `tool` strings, Phase 1 controls.
+**Fixed in 5C:** CLI text output could be given forged finding lines by newline/U+2028 in file names (`cli._s` is now single-line).
+
+**Commands and results (this host: Docker 29.8.0, Linux 7.0, x86_64):**
+- `SAFERUN_REQUIRE_DOCKER=1 SAFERUN_OSV_DB=<dir with PyPI+npm all.zip from "saferun osv-db update"> .venv/bin/python -m pytest -q -p no:cacheprovider -rs` -> **806 passed, 0 skipped** (252 s). Baseline before Phase 5: 678 passed, 5 skipped.
+- Without `SAFERUN_OSV_DB` (no data in the default directory): the 3 DB-dependent files give `44 passed, 14 skipped` (skip reason printed); everything else unchanged.
+- `cd web && npm test` -> 23 passed; `npm run build` ok; `npm audit --omit=dev` -> 0 vulnerabilities.
+- Real scans: `saferun scan` on a Python+JS project: Semgrep check result byte-identical (minus duration) to the previous host-run result; requests 2.19.0 + lodash 4.17.15 -> 11 findings from the offline DB in the container.
+- Mutation checks (change made, targeted tests, change reverted): skip image-ID comparison, writable extra mount, drop `--offline`, re-import `find_tool` into semgrep.py -> each made at least one test fail (the last one only after strengthening the AST test).
+- Cleanup after the full run: 0 containers with label `saferun.sandbox=1`, 0 `saferun*` entries in /tmp.
+**Not verified / environmental:** only Docker 29.8.0 with the builtin seccomp profile and AppArmor `docker-default` (corrected: an earlier version of this line wrongly said "no AppArmor"); no second OS user; no rootless/userns-remap Docker; no non-amd64 build; no other browser than the earlier Chrome run (dashboard UI changes covered by jsdom tests only); the OSV data was downloaded once (PyPI 37 MB, npm 219 MB) into a scratch directory, not into the default location.
+
+## Phase 5B/5C review fixes (applied; uncommitted, awaiting owner review)
+Findings from the focused review were first re-confirmed against the code (empty-zip database -> `passed`; MD5 skipped without a header; lock 664/775; `--dir` chmod 700 -> 755; stale guidance), then fixed.
+**Found while fixing (worse than reviewed):** the real OSV server sends `x-goog-hash` as TWO headers (`crc32c`, `md5`); `resp.headers.get()` returned only the first, so the MD5 comparison in the earlier `osvdb.update` never ran against real downloads
+(the earlier documentation claim of an MD5 check was true of the code path but not of the behaviour). Fixed with `_header_values` (all header lines); a real download now reports `MD5 verified`.
+**OSV database (`engine/osvdb.py`, `engine/osv.py`):** `manifest.json` per database (SHA-256, size, advisory count, update time, MD5 status); `update` refuses a missing/invalid MD5 header unless `--allow-unverified` (recorded as `unverified` and shown in every scan's notes),
+refuses non-zip/empty/below-floor archives (PyPI 5 000, npm 40 000), never chmods an existing directory (creates missing ones 0755), refuses symlinked directories; `validate()` re-hashes before every scan and returns problems (-> check `error`, container not started) or a stale
+notice (older than `osv_db_max_age_days`, default 30 -> `incomplete`, findings kept). Freshness/hash/MD5 status are appended to the check's `notes` (existing notes keep their order). New: `saferun osv-db status`, `osv-db update --allow-unverified`.
+**Analyzer lock (`sandbox/analyzer.py`, `docker/analyzer/build.sh`):** the lock and its directory must be owned by the current user and owner-only (0600 / 0700), opened with `O_NOFOLLOW`; anything else raises `AnalyzerIntegrityError` before Docker is consulted. `write_lock` (used by `build.sh`) creates the directory 0700 and the file 0600 atomically and refuses an existing loose directory instead of chmod'ing it.
+On this machine I tightened SafeRun's own directory once by hand: `chmod 700 ~/.local/share/saferun; chmod 600 ~/.local/share/saferun/analyzer-image-id` (it had been created 775/664 by the previous `build.sh`). No other existing directory was changed.
+**Docs/UI:** Guide page, README, `docs/cli.md`, `docs/api.md`, `docs/engine.md`, `pyproject.toml` (the `analysis` extra is removed; Semgrep is never taken from the host environment) no longer describe online OSV or host tools; AppArmor claims corrected (it is active: `docker-default (enforce)` read from inside the analyzer container by the Phase 1 attestation, now tested);
+the "all host process creation" wording corrected to `subprocess.Popen`/`subprocess.run`; "parses nothing" corrected (the host reads the zip central directory). Limits of the checks are documented in PROJECT.md and `docs/cli.md`.
+**Tests (new):** `tests/test_osv_db_integrity.py` (53), `tests/test_analyzer_lock.py` (26), attestation of the analyzer image (1); fixtures `make_osv_db` / `low_osv_floor`. Nine mutations (skip SHA-256, skip floor at scan/update time, silently skip MD5, original single-header bug, chmod existing dirs, ignore staleness, ignore lock file mode, ignore lock directory mode) each make tests fail; all restored.
+**Behaviour changes (security fixes):** a database installed by the earlier version has no manifest and is now refused until `saferun osv-db update` is re-run; data older than 30 days makes the dependency check `incomplete` (verdict WARNING unless a finding says FAIL); a lock file with group/other access, or in such a directory, is refused; `osv-db update` fails when the server sends no MD5 header.
+**Not changed (still open):** second sanitization copy ignores custom workspace limits (L6); the health endpoint does not report OSV data state (L8); `tools.py` still contains unused host-runner helpers (Info); redaction of analyzer output is untested (Info); lock/image trust remains local-file based (registry digest/signing is 5E).
+
+## Setup workflow: `saferun init` and `saferun status` (implemented; uncommitted, awaiting owner review)
+**Request:** a user-friendly installation/setup flow, extending the existing code. The pasted request was cut off after "Preserve existing CLI commands, exit codes, report"; I applied the constraints stated for earlier phases (schema, verdicts, offline-only scans, no host analyzers).
+**New:** `saferun/setup.py` (components, detection, selection parsing, workflow, scan hints), CLI subcommands `init` / `status`, `verify-images --only`, `osvdb.update(progress=...)`, `images.AnalyzerRelease` + `ANALYZER_RELEASE = None`, `sandbox/analyzer.py` split into `inspect_analyzer_tag` / `check_labels` (behaviour unchanged),
+`docs/release-images.md`, Guide page sections (components, setup commands, missing/outdated, offline), `tests/test_setup.py` (73), `GuidePage.test.jsx` (2).
+**Components (derived from the code):** `python` and `node` (the two pinned images in `sandbox/images.py`), `analyzer` (image holding Semgrep, OSV-Scanner and the rules; OSV-Scanner is not separable from it), `osv-db` (validated data). Checks map: python-syntax -> python; javascript-syntax -> node; python-static-analysis -> analyzer; dependency-vulnerabilities -> analyzer + osv-db.
+**Behaviour:** state is `ready` only if the existing verification passes now (image RepoDigests contain the pin; analyzer lock+labels+rules; OSV manifest hashes/age). Valid components are skipped without any network probe; missing/invalid/outdated are offered (interactive) or acted on (flags). Pulls use `repo@digest`. Everything installed is re-verified.
+A failed analyzer is rebuilt only with `--repair` or an interactive "y". Offline: no downloads attempted, valid components still used, missing ones listed, preload instructions printed, exit 1. A scan with an unready component adds `setup: ... -> fix: saferun init --only X` lines on stderr only.
+**Prebuilt images:** base images are pulled by pinned digest (Docker Hub, content-addressed). **No prebuilt analyzer exists**: there is no registry/repository/digest in the repository and none was invented; `init` builds it locally with `docker/analyzer/build.sh` (requires a checkout; the pip package does not contain `docker/`). The download path for a future published image is implemented and tested with a fake Docker but inactive.
+**Real runs on this machine:** `saferun status` (all ready after `init`), `saferun init --only python,node,analyzer` (all skipped, no downloads), `saferun init --only osv-db` (real download of 256 MB with progress into `~/.local/share/saferun/osv-db`, verified), `saferun init --all` (everything skipped), `saferun init` without a terminal (exit 64), real scan with the default data location (FAIL with findings). Not run for real: a fresh pull of a missing sandbox image, a fresh analyzer build through `init`, offline mode (these are covered with fakes), interactive menu in a real terminal.
+**Mutation checks (change, run tests, revert):** never skip valid, trust a digest mismatch, assume success without re-verifying, rebuild without consent, ignore missing internet, pull a floating tag, ignore Docker errors -> each failed tests.
+**Known gaps:** analyzer cannot be installed without internet; `docker load` may drop registry digests (then images read as invalid; untested across Docker versions); disk-space check covers only the OSV directory; `init` of images does not check Docker's disk; the pip package lacks `docker/`.
+
+## Terminal presentation: colours, icons, spinner, progress bar (implemented; uncommitted, awaiting owner review)
+**Request:** make CLI output quicker to read: a loading animation instead of a bare cursor, coloured headings, ticks/crosses, severity colours. Presentation only; no check, engine, schema, exit-code or JSON change.
+**New:** `saferun/ui.py` (Theme, colour policy, Spinner, progress bar), `render_styled` + `_next_steps` in `saferun/cli.py`, `--color auto|always|never` on `scan`/`init`/`status`/`verify-images`/`osv-db status`, themed `status_report`/`init` output/menu/progress bar in `saferun/setup.py`, `tests/test_ui.py` (25), a Guide entry.
+**Rules:** colour/animation only on a terminal (`NO_COLOR`, `FORCE_COLOR`, `TERM=dumb`, `--color` honoured); the spinner writes to stderr and hides/restores the cursor even on Ctrl-C; plain text (pipes, CI, all earlier tests) is byte-identical to before; JSON is never decorated; every untrusted value is sanitized by the existing one-line cleaner before painting (hostile-name test strips our own sequences and finds nothing else).
+**Verified:** real PTY run of `saferun scan` (53 spinner frames, cursor hidden then restored, report after), rendering of the coloured output for clean / insecure-code / vulnerable-dependency projects (ANSI converted to HTML, screenshots in headless Chrome), 130 tests in the CLI/setup/UI files. Mutation checks: colour on non-terminals, painting unsanitized text, leaving the cursor hidden, decorating JSON: each failed tests.
+**Process note:** during these mutation checks the backup directory was missing, so four mutations stayed applied in `ui.py`/`cli.py` until I noticed and reverted them by hand; the code was then re-verified by the test files above and by the full suite below.
+**Not done:** per-check live progress (the engine runs the checks in one call; adding a callback would touch the engine), a dark/light theme switch, Windows terminals, screen-reader review.

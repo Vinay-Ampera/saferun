@@ -1,15 +1,14 @@
 # Web dashboard and API (Phase 4)
 
 > **Local, loopback-only demonstration interface. The CLI remains the primary product.**
-> **Do not expose this server beyond your own machine.** Uploaded archives are never *executed*, but Semgrep and OSV-Scanner
-> *parse* them **on the host, as the user running the server** (who is typically in the `docker` group). A parser bug or a crafted
-> file in either tool would run with that user's privileges. This host-side analyzer risk is **not solved** — it is contained by
-> policy: the application refuses non-loopback binds and non-loopback peers. Running the analyzers in a hardened, network-less
-> container (see IMPLEMENTATION.md *Host-side analyzer risk*) is the prerequisite for any wider use.
+> **Do not expose this server beyond your own machine.** Uploaded archives are never *executed*. Since Phase 5B Semgrep and OSV-Scanner *parse*
+> them inside a locked-down analyzer container (no network, read-only project, non-root, no capabilities, resource limits) instead of on the host, which
+> removes the former "host-side analyzer" exposure **as far as the container boundary holds** (see PROJECT.md *Phase 5 security status*: tested, not proven).
+> The dashboard is still loopback-only in code, has **no authentication**, and any local user can use the port; that restriction stays until the isolation has been reviewed.
 
 ## Run
 ```bash
-.venv/bin/pip install -e '.[dev,web,analysis]'     # fastapi + uvicorn are an optional extra; `pip install saferun` alone is unchanged
+.venv/bin/pip install -e '.[dev,web]'     # fastapi + uvicorn are an optional extra; `pip install saferun` alone is unchanged
 (cd web && npm ci --ignore-scripts && npm run build)   # builds web/dist (git-ignored); needs Node 20.19+/22.12+
 .venv/bin/saferun-web                              # or: python -m saferun.api   → http://127.0.0.1:8765/
 ```
@@ -18,8 +17,8 @@ status 64 **before** the server is created; there is no environment variable or 
 checked by `GuardMiddleware`, so the restriction also holds if the ASGI app is started some other way.
 Development: `cd web && npm run dev` (Vite on 127.0.0.1:5173, proxying `/api` to 8765). Frontend tests: `npm test`. The frontend is plain JavaScript (React + Vite, `.jsx`); there is no TypeScript.
 
-The dashboard needs the same things as the CLI: Docker + the runtime images, and optionally Semgrep and OSV-Scanner. `GET /api/health` and the
-UI say which are missing; a missing tool means that check is `unavailable` and the verdict is at best WARNING.
+The dashboard needs the same things as the CLI: Docker, the runtime images and the analyzer image (`docker/analyzer/build.sh`), plus validated OSV data (`saferun osv-db update`; scans refuse invalid data and report data older than 30 days as `incomplete`). `GET /api/health` (`docker_cli`, `analyzer`; `semgrep`/`osv_scanner` mirror `analyzer`) and the
+UI say what is missing; a missing piece means that check is `unavailable`/`error` and the verdict is at best WARNING.
 
 ## Design
 ```
@@ -56,7 +55,7 @@ Tests live beside what they test. Plain global class names are used (no CSS modu
 ### Endpoints
 | | |
 |---|---|
-| `POST /api/scans?osv=online\|offline\|disabled` | body = raw ZIP, `Content-Type: application/zip`, header `X-SafeRun-Request: 1` → `202 {id,status}`. `413` too large · `415` wrong type · `429` queue full (`Retry-After`) · `408` upload too slow · `400/422` malformed |
+| `POST /api/scans?osv=offline\|disabled` (default `offline`; `online` → `422 osv-online-unsupported`) | body = raw ZIP, `Content-Type: application/zip`, header `X-SafeRun-Request: 1` → `202 {id,status}`. `413` too large · `415` wrong type · `429` queue full (`Retry-After`) · `408` upload too slow · `400/422` malformed |
 | `GET /api/scans/{id}` | `{id,status,osv_mode,created_at,archive,error,report?}`; status ∈ `queued, running, done, failed, rejected`. HTTP 200 whatever the verdict |
 | `DELETE /api/scans/{id}` | `204` (finished only; `409` if running) |
 | `GET /api/health` | tool availability (booleans), queue occupancy, limits. No paths |
@@ -84,15 +83,15 @@ writes into a fresh 0700 directory, files 0644 / directories 0755 regardless of 
 The worker is started with an environment built from an allow-list, never from `os.environ` as a whole, and as `python -I` (no `PYTHONPATH`, no user site, no cwd on `sys.path`).
 | Variable | Preserved because |
 |---|---|
-| `PATH` (the server interpreter's bin dir is prepended) | the worker must find `docker`, `semgrep`, `osv-scanner` |
+| `PATH` (the server interpreter's bin dir is prepended) | the worker must find `docker`; analyzers run in a container, not from PATH |
+| `SAFERUN_ANALYZER_LOCK`, `SAFERUN_OSV_DB` | explicit locations of the analyzer build lock and the offline OSV data; resolved in the server (the worker's HOME is a private directory) and passed on |
 | `LANG`, `LC_ALL`, `TZ` | decoding of tool output; timestamps |
 | `DOCKER_HOST` | the sandbox reads it and accepts only `unix://` endpoints; a different local socket must keep working |
 | `DOCKER_CONTEXT` | selects the context the docker CLI talks to |
 | `DOCKER_CONFIG` | only if the operator set it explicitly. The real `~/.docker` (registry credentials) is **not** exposed |
-| `HTTP(S)_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `SSL_CERT_DIR` | **only for OSV online mode**, which needs the network (same rule as the engine's own tool runner) |
 | `HOME`, `TMPDIR` | *set by SafeRun* to a private per-job directory (deleted with the job), not inherited |
 Everything else is dropped, notably cloud/API tokens (`AWS_*`, `GITHUB_TOKEN`, `ANTHROPIC_API_KEY`…), `SSH_AUTH_SOCK`, and the code-injection variables `PYTHON*`, `LD_*`,
-`BASH_ENV`, `ENV`. Semgrep and OSV-Scanner then get the engine's own, even smaller environment. Consequence: a non-default Docker context that is defined only in `~/.docker` is not
+`BASH_ENV`, `ENV`. The analyzers run in a container that receives no host environment at all. Consequence: a non-default Docker context that is defined only in `~/.docker` is not
 visible to the worker — set `DOCKER_CONTEXT`/`DOCKER_CONFIG` for the server if you need that.
 
 ## Network-facing protections
@@ -103,17 +102,16 @@ security headers on every response (`Content-Security-Policy` without inline scr
 the loopback port (any local user) can use the dashboard and read results by ID.
 
 ## Privacy
-With OSV *online* (the default), package names and versions from lockfiles / `requirements.txt` are sent to OSV.dev by the machine running SafeRun. The UI states this next
-to the selector; *offline* needs cached databases (otherwise the dependency check errors → WARNING); *disabled* skips the check (→ WARNING).
+Nothing leaves the machine: scans run offline. There is no OSV *online* mode (it was removed in Phase 5B); `disabled` skips the dependency check (→ WARNING). Refresh the local OSV data with `saferun osv-db update`.
 
 ## Cleanup
 The upload, the extraction directory and the worker's HOME are deleted before a job's result is published. Startup sweeps `saferun-up-*` directories and `saferun-upl-*` files older
 than 40 min (owned by the current user) and calls `reap_orphans()`; a killed or timed-out job triggers `reap_orphans()` again (containers also die by their own container-side timeout).
 A SIGKILLed server leaves its in-flight files until the next startup sweep. **Stopping the server (Ctrl+C) during a scan does not kill the running worker**: it lives in its own session and ends by itself within its own timeouts (the engine deletes its own workspace; the extraction directory is swept at the next start once it is 40 min old).
 
-## Online / offline OSV
-`online` (default) lets OSV-Scanner contact api.osv.dev; verified by hand with the real osv-scanner 2.7.0 through the dashboard server: `django==2.2.0` → 43 findings, FAIL. `offline` without cached databases → the dependency check ends in `error` (osv-scanner exit 127), verdict WARNING, never clean. `disabled` → `skipped`, WARNING. The flags and the environment the tool receives (proxy/cert variables only when online, none of the server's secrets) are pinned by `tests/test_api_osv_plumbing.py` with a recording fake binary. Real-network behaviour is not part of the automated suite unless osv-scanner is on PATH (`tests/test_engine_real_tools.py`).
+## OSV modes
+`offline` (default): OSV-Scanner runs in the analyzer container without network, reading the local OSV data mounted read-only; verified through the real chain (API -> worker CLI -> engine -> container) with the real osv-scanner 2.7.0. No local data → the dependency check ends in `error`, verdict WARNING, never clean. `disabled` → `skipped`, WARNING. `online` is refused with `422`: a container with network access cannot be restricted to api.osv.dev without a host firewall or egress proxy (see PROJECT.md *Phase 5B*), and SafeRun does not pretend otherwise.
 
 ## Limitations
-No authentication, loopback only; host-side analyzers as above; in-memory results (lost on restart); one job at a time; ZIP only; the 408 timeout covers the upload only; the dashboard
+No authentication, loopback only; analyzers isolated in a container (tested, not proven; the container shares the host kernel); in-memory results (lost on restart); one job at a time; ZIP only; the 408 timeout covers the upload only; the dashboard
 inherits every engine limitation (Python-focused rules, no transitive dependency resolution, PASS ≠ safe). The UI was verified with component tests (jsdom), `curl`, and a scripted run in real Google Chrome 153 (headless, via playwright-core kept outside the repo); it was not tried in other browsers or by a human reviewer. Its styling is an original design — the reference images mentioned in the task were not available.

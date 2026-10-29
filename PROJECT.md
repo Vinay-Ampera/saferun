@@ -35,18 +35,15 @@ untrusted). A future backend interface is **not** introduced in Phase 1 (see *Op
 Flow: `create_workspace` (Phase 1 sanitized copy) → list files → run enabled checks (each guarded: an exception becomes an `error` result) →
 `compute_verdict` → delete the copy. The sandbox API is unchanged; the engine only *uses* `create_workspace`, `run_sandboxed` and the docker helpers.
 
-**Where each tool runs, and why.** The two syntax checks (`node --check`, Python `compile()`) run **inside the sandbox** (both images exist locally, no network needed; one run each with a fixed driver script, project code is compiled, never executed).
-Semgrep and OSV-Scanner run **on the host** against the sanitized *copy*: no sandbox image containing them exists and SafeRun never pulls images
-or builds one in this phase, and OSV-Scanner needs network access, which the sandbox deliberately lacks. They never execute project code, but they
-*parse* untrusted files, so a parser bug in those tools is an exposure the sandbox does not cover. Mitigations: argv only (no shell), absolute
-executable, minimal environment (no inherited credentials; proxy/cert variables only for OSV online mode), private `HOME`, own process group killed on
-timeout, 8 MiB output cap, local rules only (`--config <bundled file>`, no registry, metrics/version check off, `--disable-nosem` so `# nosem` in
-untrusted code cannot hide findings), copy contains no symlinks/special files/credential files. **Deferred:** a hardened analyzer image run in the
-sandbox (recommended before untrusted uploads, Phase 4; see IMPLEMENTATION.md *Host-side analyzer risk* — owner decision pending) — for a high-assurance deployment treat host-side analyzers as part of the trusted computing base.
+**Where each tool runs, and why (since Phase 5B).** Everything that parses untrusted files runs **inside a container**: the two syntax checks (`node --check`, Python `compile()`) in the
+`python`/`node` images, and Semgrep and OSV-Scanner in the **analyzer image** (`saferun-analyzer:local`, built by `docker/analyzer/build.sh`). All of them go through the same
+`run_sandboxed` path with the same verified restrictions (no network, read-only root and project, non-root, all capabilities dropped, seccomp/no-new-privileges, memory/swap/CPU/pids/fd/file-size
+limits, container-side kill deadline). Only OSV-Scanner gets one extra mount: the offline OSV data directory, read-only (the applied mount set is verified exactly, so an unexpected or writable
+mount stops the run). Semgrep runs with the rule file baked into the image (a scanned project cannot supply rules) and `--disable-nosem`. The host never executes Semgrep or OSV-Scanner and the
+host environment is not passed to the container. There is **no fallback**: see *Phase 5 security status*. Neither tool executes project code; they only read it.
 
 **Dependency handling.** SafeRun never installs, fetches or builds dependencies and never runs install scripts. OSV-Scanner reads dependency files only
-(`--no-resolve`): **lockfiles** (`poetry.lock`, `Pipfile.lock`, `pdm.lock`, `uv.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`) and the **manifest** `requirements.txt` (not a lockfile). Sending package names/versions to OSV.dev is the only network use (`osv_offline=True` disables it but needs locally cached databases;
-without them the tool errors and the check reports `error`). A manifest without a scannable file beside it (`package.json`, `Pipfile`, `pyproject.toml`) and requirements variants (`requirements-dev.txt`, …) are *coverage gaps*:
+(`--no-resolve`): **lockfiles** (`poetry.lock`, `Pipfile.lock`, `pdm.lock`, `uv.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`) and the **manifest** `requirements.txt` (not a lockfile). Scans use no network at all: OSV-Scanner runs offline against local OSV data (`saferun osv-db update` is the only download, of public data; nothing about any project is sent). Without the data the check reports `error`. A manifest without a scannable file beside it (`package.json`, `Pipfile`, `pyproject.toml`) and requirements variants (`requirements-dev.txt`, …) are *coverage gaps*:
 status `incomplete`/`skipped`, never clean. `requirements.txt` entries not pinned with `==` are noted as not reliably matched.
 
 **Findings vs operational errors.** A finding is a signal in the project. `error`/`timeout`/`unavailable`/`skipped`/`incomplete` describe the analysis, carry no
@@ -105,9 +102,8 @@ seccomp filter and AppArmor profile come from the Docker daemon's defaults and a
 Attacker: anyone who can reach the dashboard port, supplying a hostile ZIP. Scope: **loopback only**, enforced in code (launcher refuses non-loopback binds; middleware refuses
 non-loopback peers, foreign Host headers and cross-origin writes). Archives are validated whole and rejected on any unsafe member before extraction (traversal, absolute paths,
 symlinks/devices, duplicates/collisions, bombs, overlaps, size/count/depth limits), extracted fd-relative into a private 0700 directory, and scanned by the existing CLI in a
-child process with an allow-listed environment, a hard deadline (process-group kill) and guaranteed cleanup. Uploaded code is never executed. **Not mitigated:** Semgrep/OSV-Scanner
-parse hostile files on the host with the server user's privileges (see *Host-side analyzer risk* in IMPLEMENTATION.md) — the reason remote/untrusted use is unsupported; no authentication;
-local users can use the port.
+child process with an allow-listed environment, a hard deadline (process-group kill) and guaranteed cleanup. Uploaded code is never executed. **Not mitigated:** (before Phase 5B) Semgrep/OSV-Scanner
+parse hostile files inside the analyzer container (Phase 5B; tested, not proven, see *Phase 5 security status*) instead of on the host, but the dashboard stays loopback-only and unauthenticated until that isolation is reviewed; any local user can use the port.
 
 ## Operational assumptions and known exposures (read before relying on SafeRun)
 
@@ -153,13 +149,13 @@ local users can use the port.
   limit is `timeout_s + container_grace_s`. Both are best-effort against a hung Docker daemon.
 - **Orphan recovery is explicit**: the CLI does not call `reap_orphans()`; the Phase 4 server does at startup and after a killed job.
   Containers use `saferun-` names and a `saferun.deadline` label; workspaces live in the system temp dir.
-- Images are referenced by tag but each run uses the *resolved image ID* (recorded); pinning by digest is Phase 5. Sandbox output is not terminal-escape sanitized by the sandbox; the Phase 3 CLI strips control/escape characters from everything it prints.
+- Images are referenced by tag but each run uses the *resolved image ID* (recorded); images are now referenced by pinned digest (Phase 5A; see *Image pinning*). Sandbox output is not terminal-escape sanitized by the sandbox; the Phase 3 CLI strips control/escape characters from everything it prints.
 - Out of scope for Phase 1: side channels; archive attacks (Phase 4/5); running scanners on hostile input
   (Phase 2 runs Semgrep/OSV-Scanner on the host against the sanitized copy, see *Validation engine*); dependency installation (deferred, separate network-enabled step).
 
 ## Runtime profiles and JavaScript
 A *profile* (`profiles.py`) is just a name for an image plus its interpreter; every profile gets exactly the same
-restrictions, verified the same way: **python** → `python:3.12-slim`, **node** → `node:22-slim` (must be pulled
+restrictions, verified the same way: **python** → `python:3.12-slim@sha256:78387bc3…`, **node** → `node:22-slim@sha256:4b150b48…` (pinned by digest, must be pulled
 explicitly: `docker pull node:22-slim`).
 
 | JavaScript / Node.js | Status |
@@ -200,7 +196,7 @@ keep copyright notices, and carry any NOTICE file (none was seen). SafeRun adds 
 | SDKs (`SupportedLanguages`, 5 languages) | host-side clients | Apache-2.0 | they control sandboxes; they do not run code themselves | **Avoid** |
 | Isolation sessions (bubblewrap) | per-run namespaces in one sandbox | bwrap · Apache-2.0 | needs `CAP_SYS_ADMIN` + unconfined AppArmor/seccomp; "hard trust boundaries out of scope" | **Avoid** |
 | gVisor / Kata / Firecracker runtime options | stronger isolation | runsc / kata · Apache-2.0 | gVisor ↔ egress sidecar conflict; Firecracker K8s-only | **Defer**: a future backend could pass `--runtime`; not implemented |
-| Release practice (cosign signing, digest pinning) | supply-chain hygiene | — | — | **Adopt as practice** in Phase 5 (no code) |
+| Release practice (cosign signing, digest pinning) | supply-chain hygiene | — | — | Digest pinning **done** (Phase 5A); cosign signing remains Phase 5E |
 
 A broad backend-interface refactor was **not** done in Phase 1: it is not needed to complete the phase, would touch
 verified code, and the only second backend considered (OpenSandbox) failed the risk review above. The seams exist
@@ -211,7 +207,57 @@ verified code, and the only second backend considered (OpenSandbox) failed the r
 1. Environment + sandbox PoC — **approved as the Phase 2 baseline** (a milestone approval, not a security certification)
 2. Validation engine (syntax, Semgrep, dependency vulns, normalized report, tests) — **committed (`088b279`)**
 3. CLI — **committed (`a9ea5dc`)**; the primary product
-4. Web dashboard (upload limits, secure handling) — **implemented, awaiting owner review (uncommitted)**; local/loopback-only demonstration interface; remote use needs isolated analyzers first
-5. Integration, security testing, release docs
+4. Web dashboard (upload limits, secure handling) — **committed (`e4bceef`)**; local/loopback-only demonstration interface; remote use needs isolated analyzers first
+5. Integration, security testing, release docs — 5A image pinning, 5B analyzer isolation and 5C adversarial tests **implemented, uncommitted, awaiting owner review**; 5D (cleanup/exhaustion hardening) and 5E (release docs, cosign) not started
 
 A phase starts only after the previous one's acceptance criteria are met and approved.
+
+## Image pinning (Phase 5A)
+- Profiles and `DEFAULT_IMAGE` use `repo:tag@sha256:<index digest>` references from `saferun/sandbox/images.py`. Docker resolves by digest; the tag is only a label.
+- `dk.resolve_image` (called by every `preflight`) additionally checks that the local image's `RepoDigests` contain the pinned digest and raises
+  `SandboxError` otherwise, so a mismatch stops the run before any container exists. Tag-only references (used by some tests) behave as before.
+- Pins were taken from the local images the Phase 1-4 tests ran on and confirmed against Docker Hub on 2026-10-29 (`docker buildx imagetools inspect
+  python@sha256:78387bc3…` returned that digest). **The `python:3.12-slim` tag has since moved** to `sha256:aa943ce4…`; the pin intentionally stays on the
+  tested digest. Updating a pin is a deliberate, reviewed change (re-run the suite and `verify-images`).
+- Report compatibility: the `tool` string of `python-syntax` / `javascript-syntax` is unchanged (`compile() (python:3.12-slim, sandboxed)`), via `RuntimeProfile.label`; the pinned image is still what runs. Only error text that quotes the image reference (`image ... not present locally`, `digest mismatch`) now shows the full `repo:tag@sha256:` reference.
+- `docker/analyzer/` holds an unwired, unbuilt build recipe for the Phase 5B analyzer image (base by digest, Semgrep wheels hash-locked, OSV-Scanner SHA-256 verified).
+
+## Phase 5 security status (5B isolation, 5C adversarial testing)
+
+**What is protected, by design.** Hostile source files and dependency files are parsed by Semgrep / OSV-Scanner only inside a container with: no network (`--network none`, verified from
+`docker inspect` before start), read-only root filesystem, the project mounted read-only (a sanitized copy: no symlinks/devices/credential files), a read-only OSV data mount, uid 65534,
+`--cap-drop ALL`, `no-new-privileges`, the daemon's seccomp profile, memory = swap limit, CPU and pids limits, fd and file-size ulimits, a private noexec tmpfs, no published ports/devices,
+log driver off, `--init`, and a container-side `timeout -s KILL` deadline plus a host-side kill. The image is built from a digest-pinned base, hash-locked Semgrep wheels and a
+checksum-verified OSV-Scanner binary; before **every** use SafeRun checks the image ID against the build lock and the tool-version and rules-hash labels against its own pins, then runs the
+container *by that ID*. Image missing / ID or label mismatch / Docker unusable / container policy violated -> the check is `unavailable` or `error` (never clean, verdict at best WARNING).
+There is no host-side execution path: asserted statically (AST test of the check modules: no `run_tool`/`find_tool`/`subprocess`/`which` names or imports), dynamically (`subprocess.Popen` and `subprocess.run` patched to raise during a scan with the analyzer unavailable; `os.system` and the `exec*` family are NOT covered by that test) and end to end (host
+`semgrep`/`osv-scanner` shims on PATH are never started, also through the dashboard API).
+
+**Network.** Scans are always offline. `saferun osv-db update` is the only code that downloads anything (public OSV data over HTTPS; size cap; the server's MD5 header is REQUIRED (earlier versions silently skipped the check: the real server sends `x-goog-hash` as two headers and only the first was read, so the MD5 was never actually compared); a readable zip with at least a floor of advisories; SHA-256/size/entry count/time recorded in `manifest.json`; atomic replace; existing directories are never chmod'ed). The host reads only the zip's central directory to count advisories (stdlib `zipfile`, nothing is extracted); it does not parse the advisories. **Per-scan online OSV queries were removed**, a deliberate behaviour change: allowing network in the analyzer container would expose the host's
+bridge gateway and LAN to a process that parses hostile input, and Docker alone cannot restrict egress to api.osv.dev (that needs a host firewall or an egress proxy, both outside this phase and
+rejected earlier in the OpenSandbox review). Consequence: a project with lockfiles but no local OSV data now yields WARNING (error) where it used to yield findings; the dashboard no longer offers
+"online" (`osv=online` -> 422). Data freshness is the operator's responsibility.
+
+**Tested controls vs proven guarantees.** The 5C suite tried specific hostile inputs and probes on this host (Docker 29.8.0, one kernel, the daemon's builtin seccomp profile, AppArmor `docker-default`) and each ended
+safely: deeply nested / oversized / NUL / non-UTF-8 sources; malformed, deeply nested and huge lockfiles; requirements directives pointing at host files and metadata endpoints; symlinks,
+FIFOs, sockets and external hardlinks; fork bomb, OOM, CPU spin, tmpfs/output flood, fd exhaustion; mount/unshare/chroot/proc-write/cgroup-write attempts; DNS and TCP connection attempts;
+tampered lock, crashing analyzer, missing data; CLI exit codes and report schema; loopback-only dashboard. **A passing test is evidence for that input on that host, not a proof.** Not
+established: absence of Semgrep/OSV-Scanner/Go/Python parser vulnerabilities, kernel or runc escapes (the container shares the host kernel; gVisor/Kata are deferred), behaviour under other
+kernels/Docker versions/rootless Docker/user-namespace remapping, other CPU architectures (the analyzer lock is linux/amd64), SELinux (not used on this host), or side channels. AppArmor IS active here: `docker info` lists `name=apparmor,profile=default`, and the Phase 1 attestation run against the analyzer image reads `docker-default (enforce)` from inside the container (`tests/test_analyzer_isolation.py::TestRealAnalyzerContainer::test_kernel_view_attestation_of_the_analyzer_image`); that is a property of this host, and the profile's contents are not audited.
+
+**Remaining limitations (stated, not hidden).**
+- **Analyzer image trust.** The image is pinned by a local lock file (the image ID, written by `build.sh`), not by a registry digest or a signature. The lock is trusted only if it and its directory are owned by the current user and owner-only (file 0600, directory 0700), it is opened without following symlinks, and anything else fails closed *before* Docker is consulted. This stops accidental or group/other tampering; it does **not** stop the same user, root, or any member of the `docker` group (root-equivalent) from replacing the image and rewriting the lock. The labels checked afterwards (tool versions, rules hash) are set by whoever builds an image and prove nothing on their own; the ID in the lock is the control. `build.sh` locks whatever it just built without human review. Only the immediate lock directory is examined, not its ancestors. Registry digest pinning or signing (cosign) is a Phase 5E item.
+- **OSV data trust.** Before every scan the data is re-validated against `manifest.json` (SHA-256, size, advisory floor, symlinks/readability, timestamps); invalid -> `error`, older than 30 days -> `incomplete`, neither is ever clean. What this does and does not give: the download's MD5 comes from the same server over the same TLS connection, so it detects corruption, not a malicious or compromised server; the SHA-256 is computed locally after download, so it detects later modification but does not authenticate the original download; the manifest sits next to the data, so anyone who can write the directory can rewrite both; OSV publishes no signature that SafeRun checks; the advisory floors (PyPI 5 000, npm 40 000) are sanity checks, not proof of completeness; a file swapped between validation and the container's read is not detected (the window is the scan itself). Freshness is reported in every dependency check's notes and by `saferun osv-db status`.
+- The OSV-Scanner checksum comes from the same upstream release as the binary (integrity, not authenticity); Semgrep wheel hashes were generated from PyPI at lock time (Linux x86_64, CPython 3.12 only).
+- Coverage cross-check quirk (pre-existing): files whose names contain control characters are reported with sanitized paths, so Semgrep's scanned-file list cannot be matched and the check ends `incomplete` (safe direction, misleading text "e.g. too large").
+- Fixed in 5C: text output could be given extra, forged finding lines by a file name containing a newline / U+2028 (every printed field is now one line; JSON output was never affected).
+- Still no authentication on the dashboard; one scan at a time; resource limits for the analyzer (1.5 GiB, 2 CPUs, 256 pids) are fixed defaults. A second sandbox backend is deferred (the container boundary is Docker-only).
+- Phase 5D items remain open: worker/directory cleanup after a SIGKILLed server, a hung Docker daemon, disk-full paths, a second OS user for the sweeper test.
+
+## Setup workflow (`saferun init`, `saferun status`)
+Implemented in `saferun/setup.py`; it only orchestrates existing verification (pinned-digest image check, analyzer lock/labels/rules hash, OSV manifest validation) and adds no trust of its own.
+A component is *ready* only if that verification passes at that moment. Installation actions: `docker pull <repo>@<pinned digest>` for the Python/Node images; `docker/analyzer/build.sh` for the analyzer (needs a repository
+checkout and internet once); `osvdb.update` for the OSV data (atomic, keeps old data on any failure). Every installed component is re-verified; failure is reported, never assumed. Rebuilding an analyzer that failed verification needs
+`--repair` or an explicit interactive confirmation, because it replaces the image and re-locks it. **Prebuilt analyzer image: not available** (no registry/digest published; `ANALYZER_RELEASE` is `None`; see `docs/release-images.md`);
+the dormant download path pulls by digest, re-verifies and only then locks. Offline: nothing is downloaded, valid components are still used, missing ones are listed with preload instructions; an analyzer cannot yet be installed without
+internet. Trust limits are those of the underlying checks (documented under *Phase 5 security status*); `init` pulling the two pinned base images makes SafeRun fetch images only on explicit user request, never during a scan.
