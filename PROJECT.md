@@ -86,7 +86,7 @@ seccomp filter and AppArmor profile come from the Docker daemon's defaults and a
 | † seccomp filter active (`Seccomp: 2` in `/proc/self/status`) | test_seccomp_filter_is_active_in_container |
 | † AppArmor `docker-default (enforce)` — only checked when the daemon reports AppArmor, otherwise the test skips visibly | test_apparmor_profile_is_applied_when_host_has_apparmor |
 | † `memory.swap.max == 0`, `memory.max`, `pids.max` in the container's cgroup | test_swap_is_disabled_and_memory_limit_in_cgroup |
-| † Copy limits (bytes/files/depth, defaults 100 MiB / 20 000 / 32) checked by a pre-scan *before* any file is copied, and again while copying | test_workspace.py |
+| † Copy limits (bytes/files/depth, defaults 400 MiB / 20 000 / 32) checked by a pre-scan *before* any file is copied, and again while copying | test_workspace.py |
 | † Identity-verified copy with a final validation pass: pre-scan records a signature of every entry/listing; copy pass requires lstat and the opened fd to match, listings to match, files unchanged after reading; a final pass re-checks every directory (identity, metadata, listing) and entry. Detected changes abort the copy (`WorkspaceChangedError`); `O_NOFOLLOW` throughout. Detection only — see *Concurrent modification* below | test_races.py (43 tests; those added for each race fail against the respective pre-fix code) |
 | † Container-side `timeout -s KILL` (timeout + grace) kills a run whose SafeRun parent was SIGKILLed | test_orphan_is_killed_by_container_timeout_then_reaped |
 | † `reap_orphans()` removes only SafeRun-labelled containers past their deadline and flock-free `saferun-ws-*` dirs; never live runs or foreign objects | test_cleanup.py |

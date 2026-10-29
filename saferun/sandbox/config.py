@@ -46,7 +46,7 @@ class SandboxLimits:
 
 @dataclass(frozen=True)
 class WorkspaceLimits:
-    max_bytes: int = 100 * 1024 * 1024
+    max_bytes: int = 400 * 1024 * 1024
     max_files: int = 20_000   # counts files, directories and skipped entries
     max_depth: int = 32       # directory levels below the project root
 

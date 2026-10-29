@@ -66,7 +66,7 @@ Job states: **done** (a verdict exists), **rejected** (the archive was refused; 
 most one extraction runs at a time.
 
 ### Limits (defaults, all tested)
-Upload 25 MiB · extracted 100 MiB · 5 000 entries · 10 MiB per file · depth 32 · path 1 024 B / component 255 B · ratio cap 100:1 (above 1 MiB) ·
+Upload 100 MiB · extracted 400 MiB · 5 000 entries · 25 MiB per file · depth 32 · path 1 024 B / component 255 B · ratio cap 100:1 (above 1 MiB) ·
 extraction 60 s · job deadline 10 min (process group killed) · tool timeout 120 s (CLI `--timeout`) · 1 running + 4 queued jobs · results kept 30 min, max 50 ·
 worker output ≤ 8 MiB · upload read deadline 120 s · uploads still being read count against the 5 slots (a stalled client cannot hold unbounded temp files) · uvicorn `limit_concurrency` 32 connections.
 

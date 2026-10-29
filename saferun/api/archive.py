@@ -66,10 +66,10 @@ class ArchiveError(Exception):
 
 @dataclass(frozen=True)
 class ArchiveLimits:
-    max_archive_bytes: int = 25 * MiB
-    max_total_bytes: int = 100 * MiB      # uncompressed, all extracted files
+    max_archive_bytes: int = 100 * MiB
+    max_total_bytes: int = 400 * MiB      # uncompressed, all extracted files
     max_entries: int = 5000               # every central-directory entry, excluded ones included
-    max_file_bytes: int = 10 * MiB        # uncompressed, per file
+    max_file_bytes: int = 25 * MiB        # uncompressed, per file
     max_ratio: int = 100                  # uncompressed : compressed
     ratio_min_bytes: int = MiB            # the ratio rule only applies above this uncompressed size
     max_depth: int = 32                   # directory levels
@@ -133,8 +133,8 @@ def _open_archive(archive, limits: ArchiveLimits):
 
 def _read_end_record(f, size: int, limits: ArchiveLimits) -> tuple[int, int, int]:
     """Parse the end-of-central-directory record ourselves. Returns (claimed entry count, central directory size,
-    offset of the end record). ZIP64 markers are refused: nothing within our limits (25 MiB archive, 5 000 entries,
-    10 MiB files) needs ZIP64, and following its indirection would let the archive hide the real directory size."""
+    offset of the end record). ZIP64 markers are refused: nothing within our limits (100 MiB archive, 5 000 entries,
+    25 MiB files) needs ZIP64, and following its indirection would let the archive hide the real directory size."""
     n = min(size, 22 + 65535)
     f.seek(size - n)
     tail = f.read(n)

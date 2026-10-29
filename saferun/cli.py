@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 import time
 from pathlib import Path
@@ -138,6 +139,51 @@ def _location(f) -> str:
     return loc
 
 
+_HASH = re.compile(r"^[0-9a-f]{40}$", re.I)
+
+
+def _vkey(v: str):
+    """Sortable key for a release number ('1.26.17' -> (1, 26, 17)); None for commit hashes and anything non-numeric."""
+    if _HASH.match(v) or not re.match(r"^\d+(\.\d+)*", v):
+        return None
+    return tuple(int(n) for n in re.match(r"^\d+(?:\.\d+)*", v).group(0).split("."))
+
+
+def upgrade_plan(report: ValidationReport) -> list[dict]:
+    """One row per vulnerable package: how many findings it has, the worst severity, and the lowest release that fixes
+    every one of them (for each finding the nearest fixed release above the installed one; for the package the highest of
+    those). `upgrade_to` is None when no finding names a usable release. Rows are worst-first."""
+    rows: dict[tuple, dict] = {}
+    for f in report.findings:
+        if not f.package:
+            continue
+        key = (f.package.ecosystem, f.package.name, f.package.version)
+        row = rows.setdefault(key, {"ecosystem": key[0], "name": key[1], "version": key[2], "findings": 0,
+                                    "severity": f.severity, "upgrade_to": None, "_key": None})
+        row["findings"] += 1
+        if f.severity.rank > row["severity"].rank:
+            row["severity"] = f.severity
+        cur = _vkey(str(f.package.version))
+        fixes = [(k, v) for v in f.fixed_versions if (k := _vkey(v)) is not None]
+        above = [x for x in fixes if cur is None or x[0] > cur] or fixes
+        if above:
+            best = min(above)
+            if row["_key"] is None or best[0] > row["_key"]:
+                row["_key"], row["upgrade_to"] = best
+    return sorted(rows.values(), key=lambda r: (-r["severity"].rank, r["name"]))
+
+
+def _plan_lines(plan: list[dict], paint=None) -> list[str]:
+    """The upgrade-plan table as aligned lines (shared by the plain and the styled report)."""
+    paint = paint or (lambda t, *a: t)
+    head = ("PACKAGE", "INSTALLED", "UPGRADE TO", "FINDINGS", "WORST")
+    body = [(_s(r["name"]), _s(r["version"]), ("\u2265 " + _s(r["upgrade_to"])) if r["upgrade_to"] else "no fix listed",
+             str(r["findings"]), r["severity"].value.upper()) for r in plan]
+    w = [max(len(x[i]) for x in [head] + body) for i in range(5)]
+    fmt = lambda row: "  " + "  ".join(c.ljust(w[i]) for i, c in enumerate(row)).rstrip()
+    return [paint(fmt(head), "dim")] + [fmt(row) for row in body]
+
+
 def render_text(report: ValidationReport, path: str) -> str:
     out = [f"SafeRun validation of {_s(path)}", "",
            f"Verdict: {report.verdict.value}    Scan complete: {'yes' if report.complete else 'NO - see coverage gaps'}",
@@ -148,6 +194,9 @@ def render_text(report: ValidationReport, path: str) -> str:
         extra = f" - {_s(c.detail)}" if c.detail else ""
         out.append(f"  {c.status.value:<14} {_s(c.name)}  ({len(c.findings)} finding(s)){extra}")
     findings = sorted(report.findings, key=lambda f: (-f.severity.rank, f.check, f.path or "", f.line or 0, f.rule_id))
+    plan = upgrade_plan(report)
+    if plan:
+        out += ["", f"Upgrade plan ({len(plan)} package(s)):"] + _plan_lines(plan)
     out += ["", f"Findings ({len(findings)}):" if findings else "Findings: none"]
     for f in findings:
         out.append(f"  [{f.severity.value.upper()}] {_s(f.rule_id)}  {_location(f)}")
@@ -228,6 +277,14 @@ def render_styled(report: ValidationReport, path: str, th: "ui.Theme", elapsed: 
         extra = f" {p('- ' + _s(c.detail), 'dim')}" if c.detail else ""
         out.append(f"  {icon} {p(f'{c.status.value:<14}', col)} {p(_s(c.name), 'bold')}  {p(f'({n} finding(s))', 'dim')}{extra}")
     findings = sorted(report.findings, key=lambda f: (-f.severity.rank, f.check, f.path or "", f.line or 0, f.rule_id))
+    plan = upgrade_plan(report)
+    if plan:
+        out += ["", p(f"Upgrade plan ({len(plan)} package(s))", "bold", "cyan")]
+        lines = _plan_lines(plan, p)
+        out.append(lines[0])
+        for r, line in zip(plan, lines[1:]):
+            sev = r["severity"].value
+            out.append(line[:-len(sev)] + p(sev.upper(), *ui.SEVERITY_STYLE[sev]))
     if findings:
         tally = {}
         for f in findings:

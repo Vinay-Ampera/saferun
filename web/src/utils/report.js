@@ -57,3 +57,41 @@ export function completedChecks(checks) {
   const applicable = checks.filter((c) => c.status !== 'not_applicable')
   return { done: applicable.filter((c) => c.status === 'passed' || c.status === 'findings').length, total: applicable.length }
 }
+
+const HASH = /^[0-9a-f]{40}$/i
+/** Sortable key for a release number ('1.26.17' -> [1, 26, 17]); null for commit hashes and anything non-numeric. */
+const vkey = (v) => {
+  const m = HASH.test(v) ? null : /^\d+(\.\d+)*/.exec(v)
+  return m ? m[0].split('.').map(Number) : null
+}
+const cmp = (a, b) => {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) - (b[i] ?? 0)
+  return 0
+}
+
+/**
+ * One row per vulnerable package, mirroring the CLI's "Upgrade plan": finding count, worst severity and the lowest release
+ * that fixes every finding (per finding the nearest fixed release above the installed one; per package the highest of those).
+ * upgradeTo is null when no finding names a usable release. Worst severity first.
+ * @returns {{name: string, version: string, ecosystem: string, findings: number, severity: string, upgradeTo: string|null}[]}
+ */
+export function upgradePlan(report) {
+  const rows = new Map()
+  for (const f of report.checks.flatMap((c) => c.findings)) {
+    if (!f.package) continue
+    const id = `${f.package.ecosystem}\u0000${f.package.name}\u0000${f.package.version}`
+    const row = rows.get(id) ?? { name: f.package.name, version: f.package.version, ecosystem: f.package.ecosystem, findings: 0, severity: f.severity, upgradeTo: null, key: null }
+    rows.set(id, row)
+    row.findings++
+    if (rank(f.severity) > rank(row.severity)) row.severity = f.severity
+    const cur = vkey(String(f.package.version))
+    const fixes = f.fixed_versions.map((v) => [vkey(v), v]).filter(([k]) => k)
+    const above = fixes.filter(([k]) => !cur || cmp(k, cur) > 0)
+    const pool = above.length ? above : fixes
+    if (pool.length) {
+      const [k, v] = pool.reduce((a, b) => (cmp(b[0], a[0]) < 0 ? b : a))
+      if (!row.key || cmp(k, row.key) > 0) { row.key = k; row.upgradeTo = v }
+    }
+  }
+  return [...rows.values()].sort((a, b) => rank(b.severity) - rank(a.severity) || a.name.localeCompare(b.name))
+}

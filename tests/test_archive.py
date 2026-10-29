@@ -119,7 +119,7 @@ def tree(project: Path) -> dict[str, bytes | None]:
 
 def test_defaults_match_the_approved_limits():
     d = ArchiveLimits()
-    assert (d.max_archive_bytes, d.max_total_bytes, d.max_entries, d.max_file_bytes) == (25 * MiB, 100 * MiB, 5000, 10 * MiB)
+    assert (d.max_archive_bytes, d.max_total_bytes, d.max_entries, d.max_file_bytes) == (100 * MiB, 400 * MiB, 5000, 25 * MiB)
 
 
 def test_limits_must_be_positive():

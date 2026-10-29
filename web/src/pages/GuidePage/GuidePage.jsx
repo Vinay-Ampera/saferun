@@ -211,7 +211,7 @@ export function GuidePage() {
           <h2>What the ZIP needs (dashboard)</h2>
           <ul className="g-list">
             <li>Project files at the top level, or inside one top-level folder.</li>
-            <li>Up to 25 MiB compressed, 100 MiB extracted and 5000 files.</li>
+            <li>Up to 100 MiB compressed, 400 MiB extracted and 5000 files.</li>
             <li>No unsafe entries (path traversal, symlinks); otherwise the whole archive is refused.</li>
             <li>Include requirements.txt or a lockfile so dependencies can be checked.</li>
           </ul>

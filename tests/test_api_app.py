@@ -122,7 +122,7 @@ def test_health_reports_tools_queue_and_limits_without_paths(client):
     h = client.get("/api/health").json()
     assert set(h) == {"docker_cli", "analyzer", "semgrep", "osv_scanner", "queue", "limits"}
     assert h["semgrep"] is h["osv_scanner"] is h["analyzer"]       # both tools live in the one verified analyzer image
-    assert h["limits"]["max_archive_mib"] == 25 and h["limits"]["max_entries"] == 5000 and h["limits"]["job_deadline_s"] == 600
+    assert h["limits"]["max_archive_mib"] == 100 and h["limits"]["max_entries"] == 5000 and h["limits"]["job_deadline_s"] == 600
     assert "/" not in json.dumps({k: v for k, v in h.items() if k not in ("limits",)}).replace("\\/", "")
 
 
