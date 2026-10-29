@@ -77,9 +77,11 @@ def test_upload_poll_and_report_roundtrip(client, ws_root):
     assert str(ws_root) not in json.dumps(job)                 # no server path in any response
 
 
-def test_default_osv_mode_is_online(client):
+def test_default_osv_mode_is_offline_and_online_is_refused(client):
     r = client.post("/api/scans", content=zip_bytes(), headers=H)
-    assert poll(client, r.json()["id"])["osv_mode"] == "online"
+    assert poll(client, r.json()["id"])["osv_mode"] == "offline"
+    r = client.post("/api/scans?osv=online", content=zip_bytes(), headers=H)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "osv-online-unsupported"
 
 
 def test_bad_archive_becomes_rejected_with_a_stable_code(client, ws_root):
@@ -118,7 +120,8 @@ def test_unknown_or_malformed_ids_are_404(client, sid):
 
 def test_health_reports_tools_queue_and_limits_without_paths(client):
     h = client.get("/api/health").json()
-    assert set(h) == {"docker_cli", "semgrep", "osv_scanner", "queue", "limits"}
+    assert set(h) == {"docker_cli", "analyzer", "semgrep", "osv_scanner", "queue", "limits"}
+    assert h["semgrep"] is h["osv_scanner"] is h["analyzer"]       # both tools live in the one verified analyzer image
     assert h["limits"]["max_archive_mib"] == 25 and h["limits"]["max_entries"] == 5000 and h["limits"]["job_deadline_s"] == 600
     assert "/" not in json.dumps({k: v for k, v in h.items() if k not in ("limits",)}).replace("\\/", "")
 

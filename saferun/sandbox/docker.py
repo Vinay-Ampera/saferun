@@ -13,6 +13,7 @@ import subprocess
 
 from .config import CONTAINER_LABEL, ControlStatus, SandboxError
 from .controls import REQUIRED_DAEMON, daemon_controls
+from .images import digest_of, repo_digests
 
 DEFAULT_TIMEOUT = 30  # seconds per docker CLI call (module attribute so tests can shorten it)
 # Plain image reference only: must not start with "-" (would be parsed as a docker option).
@@ -78,7 +79,27 @@ def resolve_image(image: str) -> str:
     image_id = r.stdout.strip()
     if not _IMAGE_ID_RE.match(image_id):
         raise SandboxError(f"unexpected image id from docker: {image_id!r}")
+    pinned = digest_of(image)
+    if pinned is not None:
+        verify_pinned_digest(image, pinned)
     return image_id
+
+
+def verify_pinned_digest(image: str, digest: str) -> None:
+    """Fail closed unless the local image behind `image` really carries the pinned `digest`.
+
+    Docker resolves `repo:tag@sha256:...` by digest, so a retagged image should not match at all; this second,
+    independent check on what Docker reports (RepoDigests) guards against a daemon that resolves differently.
+    """
+    r = docker("image", "inspect", "--format", "{{json .RepoDigests}}", validate_image(image))
+    if r.returncode != 0:
+        raise SandboxError(f"image {image!r} not present locally (SafeRun never pulls implicitly)")
+    try:
+        have = repo_digests(r.stdout.strip())
+    except ValueError as e:
+        raise SandboxError(f"cannot verify the digest of image {image!r}: {e}") from e
+    if digest not in have:
+        raise SandboxError(f"image digest mismatch for {image!r}: pinned {digest}, local image has {have or 'no digest'}")
 
 
 def preflight(image: str, allow_degraded: frozenset[str] = frozenset()) -> tuple[str, list[ControlStatus]]:

@@ -47,7 +47,8 @@ def daemon_controls(info: dict) -> list[ControlStatus]:
     return out
 
 
-def verify_applied_config(info: dict, lim: SandboxLimits, image_id: str) -> list[ControlStatus]:
+def verify_applied_config(info: dict, lim: SandboxLimits, image_id: str,
+                          extra_mount_targets: tuple[str, ...] = ()) -> list[ControlStatus]:
     """Check the container Docker created (from `docker inspect`) against policy."""
     hc = info.get("HostConfig") or {}
     cfg = info.get("Config") or {}
@@ -80,9 +81,10 @@ def verify_applied_config(info: dict, lim: SandboxLimits, image_id: str) -> list
          f"/tmp={tmpfs!r}"),
         ("shm-limit", hc.get("ShmSize") == lim.shm_mb * MIB, f"ShmSize={hc.get('ShmSize')}"),
         ("workspace-mount-read-only",
-         len(mounts) == 1 and mounts[0].get("Type") == "bind" and mounts[0].get("Target") == "/workspace"
-         and mounts[0].get("ReadOnly") is True and not hc.get("Binds"),
-         f"Mounts={mounts} Binds={hc.get('Binds')}"),
+         len(mounts) == 1 + len(extra_mount_targets) and not hc.get("Binds")
+         and all(isinstance(m, dict) and m.get("Type") == "bind" and m.get("ReadOnly") is True for m in mounts)
+         and sorted(str(m.get("Target")) for m in mounts if isinstance(m, dict)) == sorted(("/workspace", *extra_mount_targets)),
+         f"Mounts={mounts} Binds={hc.get('Binds')} expected targets={['/workspace', *extra_mount_targets]}"),
         ("no-image-volumes", not cfg.get("Volumes"), f"image declares VOLUME: {cfg.get('Volumes')}"),
         ("no-devices", not hc.get("Devices"), f"Devices={hc.get('Devices')}"),
         ("no-published-ports", not hc.get("PortBindings") and hc.get("PublishAllPorts") is False,

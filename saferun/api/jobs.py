@@ -8,7 +8,7 @@ Bounds: one running job, at most `max_queue` waiting; every job has a wall-clock
 process group is killed; results expire after `result_ttl_s`; the upload, the extraction directory and the
 worker's private HOME are deleted in a `finally`; stale leftovers of a crashed server are swept at startup.
 
-Worker environment: built from scratch from an allow-list (see ALLOWED_ENV / NET_ENV), never from os.environ as
+Worker environment: built from scratch from an allow-list (see ALLOWED_ENV), never from os.environ as
 a whole. Why each preserved variable is needed is documented next to the lists and in docs/api.md.
 """
 from __future__ import annotations
@@ -27,24 +27,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from ..engine import osvdb
 from ..engine.model import SCHEMA_VERSION, Verdict, clean_text
+from ..sandbox import analyzer
 from ..engine.tools import ToolRun, ToolUnavailable, run_tool
 from .archive import UPLOAD_PREFIX, WORKDIR_PREFIX, ArchiveError, ArchiveLimits, ExtractResult, extract_zip
 
-OSV_MODES = ("online", "offline", "disabled")
+OSV_MODES = ("offline", "disabled")   # "online" was removed in Phase 5B: scans never touch the network (see PROJECT.md)
 STATUSES = ("queued", "running", "done", "failed", "rejected")
 
 # Environment variables the worker (the SafeRun CLI) may inherit, and why. Everything else - cloud/API tokens,
 # SSH_AUTH_SOCK, GITHUB_TOKEN, PYTHON*, LD_*, BASH_ENV, ... - is dropped.
 ALLOWED_ENV = (
-    "PATH",            # find `docker`, `semgrep`, `osv-scanner` (the interpreter's own bin dir is prepended)
+    "SAFERUN_ANALYZER_LOCK", "SAFERUN_OSV_DB",   # explicit locations of the analyzer lock file and the offline OSV data
+    "PATH",            # find `docker` (the interpreter's own bin dir is prepended); analyzers run in a container, not on the host
     "LANG", "LC_ALL", "TZ",   # text decoding of tool output / timestamps
     "DOCKER_HOST",     # the sandbox only accepts unix:// endpoints and checks this variable
     "DOCKER_CONTEXT",  # which docker context the CLI talks to
     "DOCKER_CONFIG",   # only if the operator set it explicitly; the real ~/.docker is NOT exposed through HOME
 )
-NET_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
-           "SSL_CERT_FILE", "SSL_CERT_DIR")   # only for OSV online mode, same rule as saferun.engine.tools.build_env
 
 
 @dataclass(frozen=True)
@@ -76,9 +77,11 @@ def worker_env(home: Path, osv_mode: str, source: dict | None = None) -> dict[st
     """The worker's environment. `source` defaults to os.environ and is only ever read through the allow-lists."""
     src = os.environ if source is None else source
     env = {k: src[k] for k in ALLOWED_ENV if k in src and "\0" not in src[k]}
-    if osv_mode == "online":
-        env.update({k: src[k] for k in NET_ENV if k in src and "\0" not in src[k]})
     env["PATH"] = os.pathsep.join(p for p in (str(Path(sys.executable).parent), src.get("PATH", "")) if p)
+    # The worker's HOME is a private per-job directory, so the locations of the analyzer lock and the offline OSV data are
+    # resolved HERE (in the server, from its own environment) and handed over explicitly.
+    env.setdefault("SAFERUN_ANALYZER_LOCK", str(analyzer.lock_path()))
+    env.setdefault("SAFERUN_OSV_DB", str(osvdb.default_dir()))
     env.update(HOME=str(home), TMPDIR=str(home), PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
     return env
 

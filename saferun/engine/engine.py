@@ -23,7 +23,9 @@ class ValidationOptions:
     dependency_scan: bool = True
     javascript_check: bool = True
     tool_timeout_s: float = 120.0      # per external tool / sandbox run
-    osv_offline: bool = False          # OSV-Scanner without network (needs cached databases)
+    osv_offline: bool = True           # kept for compatibility: OSV-Scanner always runs offline (no network) since Phase 5B
+    osv_db_dir: Path | None = None     # offline OSV database directory (default: saferun.engine.osvdb.default_dir())
+    osv_db_max_age_days: float = 30.0  # older (but valid) OSV data makes the dependency check INCOMPLETE, never clean
     workspace_limits: WorkspaceLimits | None = None
     sensitive_policy: SensitivePolicy | None = None
 
@@ -69,7 +71,8 @@ def validate_project(project_dir, options: ValidationOptions | None = None, *, c
         home = ws.root / "home"
         home.mkdir(mode=0o700)
         ctx = CheckContext(project=ws.project, home=home, files=_list_files(ws.project),
-                           timeout_s=opts.tool_timeout_s, options={"osv_offline": opts.osv_offline})
+                           timeout_s=opts.tool_timeout_s, options={"osv_offline": True, "osv_db_dir": opts.osv_db_dir,
+                                                   "osv_db_max_age_days": opts.osv_db_max_age_days})
         if ctx_overrides:
             ctx = replace(ctx, **ctx_overrides)
         checks = [_workspace_check(ws)]

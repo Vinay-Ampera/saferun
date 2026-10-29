@@ -142,3 +142,14 @@ def test_real_sandbox_all_valid_js_passes(tmp_path, ws_root):
     (tmp_path / "p" / "a.js").write_text("module.exports = () => 1\n")
     rep = validate_project(tmp_path / "p", ValidationOptions(python_analysis=False, python_syntax=False, dependency_scan=False))
     assert [c.status for c in rep.checks if c.name == node.NAME] == [CheckStatus.PASSED]
+
+
+def test_tool_string_is_the_unpinned_label_in_every_path(tmp_path):
+    """Compatibility: report `tool` values must stay `node --check (node:22-slim[, sandboxed])`, not carry the digest."""
+    def nope(image):
+        raise SandboxError("no docker")
+    assert run(tmp_path, sandbox_returning(), available=nope).tool == "node --check (node:22-slim)"
+    assert run(tmp_path, sandbox_returning(out(line(file="a.js", ok=True), line(file="b.js", ok=True),
+                                                 line(done=True, count=2, truncated=False)))).tool == "node --check (node:22-slim, sandboxed)"
+    assert run(tmp_path, sandbox_returning("junk")).tool == "node --check (node:22-slim, sandboxed)"
+    assert NODE.label == "node:22-slim" and "@" in NODE.image

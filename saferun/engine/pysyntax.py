@@ -100,10 +100,10 @@ def run_check(ctx: CheckContext) -> CheckResult:
     try:
         ctx.image_available(PYTHON.image)
     except SandboxError as e:
-        return CheckResult(NAME, CheckStatus.UNAVAILABLE, tool=f"compile() ({PYTHON.image})",
+        return CheckResult(NAME, CheckStatus.UNAVAILABLE, tool=f"compile() ({PYTHON.label})",
                            detail=clean_text(f"sandbox or image unavailable: {e}"))
     t0 = time.monotonic()
-    res = CheckResult(NAME, CheckStatus.ERROR, tool=f"compile() ({PYTHON.image}, sandboxed)")
+    res = CheckResult(NAME, CheckStatus.ERROR, tool=f"compile() ({PYTHON.label}, sandboxed)")
     try:
         r = ctx.sandbox(ctx.project, build_command(), SandboxLimits(timeout_s=ctx.timeout_s, max_output_bytes=ctx.max_output),
                         image=PYTHON.image)

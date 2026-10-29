@@ -2,14 +2,18 @@ import json
 
 import pytest
 
-from engine_helpers import OSV_JSON, FakeRunner, make_ctx, tool_run
+from engine_helpers import OSV_JSON, FakeRunner, make_ctx, make_osv_db, tool_run
 from saferun.engine import CheckStatus, Severity, osv
+from saferun.sandbox import SandboxError
+from saferun.sandbox.analyzer import AnalyzerIntegrityError, AnalyzerUnavailable
 from saferun.engine.tools import ToolUnavailable
 
 
 @pytest.fixture(autouse=True)
-def have_osv(monkeypatch):
-    monkeypatch.setattr(osv, "find_tool", lambda n: "/fake/osv-scanner")
+def have_osv_db(tmp_path, monkeypatch, low_osv_floor):
+    """A small but internally consistent offline database so the check proceeds to the runner; the runner itself is faked in these tests."""
+    make_osv_db(tmp_path / "osvdb")
+    monkeypatch.setenv("SAFERUN_OSV_DB", str(tmp_path / "osvdb"))
 
 
 def run(tmp_path, runner, files=("package-lock.json", "package.json"), **kw):
@@ -94,10 +98,36 @@ def test_timeout_and_output_cap(tmp_path):
     assert run(tmp_path, FakeRunner(tool_run(truncated=True)), files=["yarn.lock"]).status is CheckStatus.ERROR
 
 
-def test_missing_tool_is_unavailable_and_never_clean(tmp_path, monkeypatch):
-    monkeypatch.setattr(osv, "find_tool", lambda n: None)
-    res = run(tmp_path, FakeRunner(tool_run("{}")), files=["package-lock.json"])
-    assert res.status is CheckStatus.UNAVAILABLE and not res.findings
+def _unavailable():
+    raise AnalyzerUnavailable("the analyzer image has not been built")
+
+
+def _tampered():
+    raise AnalyzerIntegrityError("analyzer image ID mismatch")
+
+
+def test_missing_analyzer_image_is_unavailable_never_clean_and_nothing_runs(tmp_path):
+    r = FakeRunner(tool_run("{}"))
+    res = run(tmp_path, r, files=["package-lock.json"], analyzer_available=_unavailable)
+    assert res.status is CheckStatus.UNAVAILABLE and not res.findings and not r.calls and "no host fallback" in res.detail
+
+
+def test_tampered_analyzer_image_is_error_and_nothing_runs(tmp_path):
+    r = FakeRunner(tool_run("{}"))
+    res = run(tmp_path, r, files=["package-lock.json"], analyzer_available=_tampered)
+    assert res.status is CheckStatus.ERROR and not res.findings and not r.calls and "mismatch" in res.detail
+
+
+def test_sandbox_failure_is_error_never_clean(tmp_path):
+    res = run(tmp_path, FakeRunner(exc=SandboxError("isolation could not be established")), files=["package-lock.json"])
+    assert res.status is CheckStatus.ERROR and not res.findings and "no host fallback" in res.detail
+
+
+def test_missing_database_is_error_with_the_fix_and_nothing_runs(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFERUN_OSV_DB", str(tmp_path / "nowhere"))
+    r = FakeRunner(tool_run("{}"))
+    res = run(tmp_path, r, files=["package-lock.json"])
+    assert res.status is CheckStatus.ERROR and not r.calls and "saferun osv-db update" in res.detail and not res.findings
 
 
 def test_tool_vanishing(tmp_path):
@@ -130,19 +160,21 @@ def test_invocation_is_controlled(tmp_path):
     r = FakeRunner(tool_run(json.dumps({"results": []})))
     run(tmp_path, r, files=["package-lock.json", "sub/yarn.lock"], timeout_s=9)
     c = r.calls[0]
-    assert c["argv"][:3] == ["/fake/osv-scanner", "scan", "source"] and "--offline" not in c["argv"]
+    assert c["argv"][:4] == ["/usr/bin/env", "XDG_CACHE_HOME=/osv-db", "/usr/local/bin/osv-scanner", "scan"]
+    assert "--offline" in c["argv"] and "--offline-vulnerabilities" in c["argv"]   # always offline
+    assert [m[1] for m in c["mounts"]] == ["/osv-db"] and c["env"] is None
     assert c["argv"][-2:] == ["--lockfile=./package-lock.json", "--lockfile=./sub/yarn.lock"] and c["timeout_s"] == 9
     assert "--no-resolve" in c["argv"]
 
 
-def test_offline_option_disables_network_env(tmp_path, monkeypatch):
+def test_scans_are_offline_whatever_the_options_say(tmp_path, monkeypatch):
+    """Phase 5B: there is no online mode; a stray proxy variable or osv_offline=False cannot enable the network."""
     monkeypatch.setenv("HTTPS_PROXY", "http://p")
-    r = FakeRunner(tool_run(json.dumps({"results": []})))
-    run(tmp_path, r, files=["package-lock.json"], options={"osv_offline": True})
-    assert "--offline" in r.calls[0]["argv"] and "HTTPS_PROXY" not in r.calls[0]["env"]
-    r2 = FakeRunner(tool_run(json.dumps({"results": []})))
-    run(tmp_path, r2, files=["package-lock.json"])
-    assert r2.calls[0]["env"]["HTTPS_PROXY"] == "http://p"
+    for opts in ({}, {"osv_offline": True}, {"osv_offline": False}):
+        r = FakeRunner(tool_run(json.dumps({"results": []})))
+        run(tmp_path, r, files=["package-lock.json"], options=opts)
+        argv = r.calls[0]["argv"]
+        assert "--offline" in argv and "--offline-vulnerabilities" in argv and r.calls[0]["env"] is None
 
 
 def test_lockfile_cap(tmp_path):
@@ -162,8 +194,8 @@ def test_requirements_txt_is_a_manifest_not_a_lockfile():
 def test_unpinned_note_says_manifest_and_lower_bound(tmp_path):
     ctx = make_ctx(tmp_path, ["requirements.txt"], FakeRunner(tool_run(json.dumps({"results": []}))))
     (ctx.project / "requirements.txt").write_text("flask>=1.0\n")
-    note = osv.run_check(ctx).notes[-1]
-    assert "not a lockfile" in note and "lower bound" in note
+    notes = osv.run_check(ctx).notes           # database freshness notes follow the existing ones, so search by content, not position
+    assert any("not a lockfile" in n and "lower bound" in n for n in notes)
 
 
 def test_error_detail_prefers_error_lines_over_progress(tmp_path):

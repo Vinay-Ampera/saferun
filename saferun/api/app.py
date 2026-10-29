@@ -3,7 +3,7 @@
 A thin HTTP layer: upload a ZIP, poll the job, read the engine's report. All validation happens in the existing
 CLI/engine (see jobs.py); nothing is executed here, and there is no endpoint that runs code or commands.
 
-  POST   /api/scans?osv=online|offline|disabled   body: raw application/zip      -> 202 {id, status}
+  POST   /api/scans?osv=offline|disabled   body: raw application/zip      -> 202 {id, status}
   GET    /api/scans/{id}                                                          -> job (+ report when done)
   DELETE /api/scans/{id}                                                          -> 204 (finished jobs only)
   GET    /api/health                                                              -> tool availability, limits
@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from ..sandbox import reap_orphans
 from .archive import MiB, UPLOAD_PREFIX, ArchiveLimits
 from .guard import GuardMiddleware
+from ..sandbox.analyzer import verify_analyzer_image
 from .jobs import OSV_MODES, Busy, JobLimits, JobManager, sweep_stale, worker_path
 
 DEFAULT_STATIC_DIR = Path(__file__).resolve().parents[2] / "web" / "dist"
@@ -72,7 +73,10 @@ def create_app(manager: JobManager | None = None, *, archive_limits: ArchiveLimi
     app.add_middleware(GuardMiddleware)
 
     @app.post("/api/scans", status_code=202)
-    async def create_scan(request: Request, osv: str = "online"):
+    async def create_scan(request: Request, osv: str = "offline"):
+        if osv == "online":
+            return _error(422, "osv-online-unsupported", "online OSV scanning is not supported: scans run offline in an isolated "
+                          "container. Refresh the local data with `saferun osv-db update`")
         if osv not in OSV_MODES:
             return _error(422, "invalid-osv-mode", f"osv must be one of: {', '.join(OSV_MODES)}")
         ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -142,8 +146,14 @@ def create_app(manager: JobManager | None = None, *, archive_limits: ArchiveLimi
     @app.get("/api/health")
     def health():
         path = worker_path()
-        have = lambda name: shutil.which(name, path=path) is not None  # noqa: E731
-        return {"docker_cli": have("docker"), "semgrep": have("semgrep"), "osv_scanner": have("osv-scanner"),
+        docker_cli = shutil.which("docker", path=path) is not None
+        try:
+            verify_analyzer_image()
+            analyzer = True
+        except Exception:  # noqa: BLE001 - any problem means the analyzer cannot be relied on
+            analyzer = False
+        # "semgrep" / "osv_scanner" keep their old keys: both now mean "available in the verified analyzer image"
+        return {"docker_cli": docker_cli, "analyzer": analyzer, "semgrep": analyzer, "osv_scanner": analyzer,
                 "queue": mgr.counts(),
                 "limits": {"max_archive_mib": limits.max_archive_bytes // MiB, "max_uncompressed_mib": limits.max_total_bytes // MiB,
                            "max_entries": limits.max_entries, "max_file_mib": limits.max_file_bytes // MiB,

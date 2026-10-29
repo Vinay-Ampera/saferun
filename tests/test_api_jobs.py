@@ -295,7 +295,7 @@ HOSTILE = {"PATH": "/usr/bin:/bin", "HOME": "/home/victim", "AWS_SECRET_ACCESS_K
 def test_worker_env_is_an_allow_list(tmp_path):
     env = worker_env(tmp_path, "disabled", HOSTILE)
     assert set(env) == {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG",
-                        "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE"}
+                        "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE", "SAFERUN_ANALYZER_LOCK", "SAFERUN_OSV_DB"}
     assert env["HOME"] == str(tmp_path) != HOSTILE["HOME"] and env["TMPDIR"] == str(tmp_path)
     assert env["PATH"].endswith(HOSTILE["PATH"]) and env["PATH"].startswith(str(Path(sys.executable).parent))
     flat = json.dumps(env)
@@ -303,14 +303,24 @@ def test_worker_env_is_an_allow_list(tmp_path):
         assert bad not in flat
 
 
-def test_proxy_and_cert_variables_only_reach_online_mode(tmp_path):
-    assert {"HTTPS_PROXY", "SSL_CERT_FILE"} <= set(worker_env(tmp_path, "online", HOSTILE))
+def test_proxy_and_cert_variables_never_reach_the_worker(tmp_path):
+    """Phase 5B: there is no online mode, so no network settings are forwarded in any mode."""
     for mode in ("offline", "disabled"):
-        assert not ({"HTTPS_PROXY", "SSL_CERT_FILE"} & set(worker_env(tmp_path, mode, HOSTILE)))
+        assert not ({"HTTPS_PROXY", "SSL_CERT_FILE", "HTTP_PROXY", "SSL_CERT_DIR"} & set(worker_env(tmp_path, mode, HOSTILE)))
+
+
+def test_worker_gets_explicit_analyzer_and_osv_data_locations(tmp_path, monkeypatch):
+    for k in ("SAFERUN_OSV_DB", "SAFERUN_ANALYZER_LOCK", "XDG_DATA_HOME"):
+        monkeypatch.delenv(k, raising=False)
+    env = worker_env(tmp_path, "offline", {"PATH": "/bin"})
+    assert env["SAFERUN_ANALYZER_LOCK"].endswith("analyzer-image-id") and env["SAFERUN_OSV_DB"].endswith("osv-db")
+    assert str(tmp_path) not in env["SAFERUN_OSV_DB"]          # resolved from the server's environment, not the private job HOME
+    env = worker_env(tmp_path, "offline", {"PATH": "/bin", "SAFERUN_OSV_DB": "/data/osv", "SAFERUN_ANALYZER_LOCK": "/data/lock"})
+    assert env["SAFERUN_OSV_DB"] == "/data/osv" and env["SAFERUN_ANALYZER_LOCK"] == "/data/lock"
 
 
 def test_worker_env_skips_unset_and_nul_values(tmp_path):
-    env = worker_env(tmp_path, "online", {"PATH": "/bin", "DOCKER_HOST": "unix:///x\0y"})
+    env = worker_env(tmp_path, "offline", {"PATH": "/bin", "DOCKER_HOST": "unix:///x\0y"})
     assert "DOCKER_HOST" not in env and "DOCKER_CONTEXT" not in env
 
 

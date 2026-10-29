@@ -5,12 +5,9 @@ import pytest
 
 from engine_helpers import SEMGREP_JSON, FakeRunner, make_ctx, sg_json, tool_run
 from saferun.engine import CheckStatus, Severity, semgrep
+from saferun.sandbox import SandboxError
+from saferun.sandbox.analyzer import AnalyzerIntegrityError, AnalyzerUnavailable
 from saferun.engine.tools import ToolUnavailable
-
-
-@pytest.fixture(autouse=True)
-def have_semgrep(monkeypatch):
-    monkeypatch.setattr(semgrep, "find_tool", lambda n: "/fake/semgrep")
 
 
 def run(tmp_path, runner, files=("app.py", "lib/h.py")):
@@ -84,11 +81,29 @@ def test_tool_reported_errors_make_it_incomplete_keeping_findings(tmp_path):
     assert res.status is CheckStatus.INCOMPLETE and len(res.findings) == 2 and "bad.py" in res.errors[0]
 
 
-def test_missing_tool_is_unavailable(tmp_path, monkeypatch):
-    monkeypatch.setattr(semgrep, "find_tool", lambda n: None)
+def _unavailable():
+    raise AnalyzerUnavailable("the analyzer image has not been built")
+
+
+def _tampered():
+    raise AnalyzerIntegrityError("analyzer image ID mismatch")
+
+
+def test_missing_analyzer_image_is_unavailable_and_nothing_runs(tmp_path):
     r = FakeRunner(tool_run(SEMGREP_JSON))
-    res = run(tmp_path, r)
-    assert res.status is CheckStatus.UNAVAILABLE and not r.calls and not res.findings
+    res = semgrep.run_check(make_ctx(tmp_path, ("app.py",), r, analyzer_available=_unavailable))
+    assert res.status is CheckStatus.UNAVAILABLE and not r.calls and not res.findings and "no host fallback" in res.detail
+
+
+def test_tampered_analyzer_image_is_error_and_nothing_runs(tmp_path):
+    r = FakeRunner(tool_run(SEMGREP_JSON))
+    res = semgrep.run_check(make_ctx(tmp_path, ("app.py",), r, analyzer_available=_tampered))
+    assert res.status is CheckStatus.ERROR and not r.calls and not res.findings and "mismatch" in res.detail
+
+
+def test_sandbox_failure_is_error_never_clean(tmp_path):
+    res = run(tmp_path, FakeRunner(exc=SandboxError("container was not started: applied configuration violates the sandbox policy")))
+    assert res.status is CheckStatus.ERROR and not res.findings and "no host fallback" in res.detail
 
 
 def test_tool_vanishing_is_unavailable(tmp_path):
@@ -107,12 +122,12 @@ def test_invocation_is_controlled(tmp_path):
     semgrep.run_check(ctx)
     c = r.calls[0]
     argv = c["argv"]
-    assert argv[0] == "/fake/semgrep" and argv[-1] == "." and c["cwd"] == ctx.project and c["timeout_s"] == 7
+    assert argv[0] == "/usr/local/bin/semgrep" and argv[-1] == "." and c["cwd"] == ctx.project and c["timeout_s"] == 7
     assert "--no-rewrite-rule-ids" in argv and "--metrics=off" in argv and "--disable-nosem" in argv and "--disable-version-check" in argv
     cfg = argv[argv.index("--config") + 1]
-    assert Path(cfg) == semgrep.RULES_FILE and argv.count("--config") == 1   # local rules only, no registry/auto
+    assert cfg == "/opt/saferun/rules/python.yml" and argv.count("--config") == 1   # rules baked into the image: local only, no registry/auto
     assert not any(a in ("auto", "p/default") or a.startswith("http") for a in argv)
-    assert c["env"]["SEMGREP_SEND_METRICS"] == "off" and "AWS_SECRET_ACCESS_KEY" not in c["env"]
+    assert c["env"] is None and c["mounts"] == ()   # no host environment is forwarded; Semgrep needs no extra mount
 
 
 def test_bundled_rules_are_well_formed_yaml_structure():

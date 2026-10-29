@@ -12,18 +12,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .config import SandboxError
+from .images import NODE_IMAGE, PYTHON_IMAGE
 
 
 @dataclass(frozen=True)
 class RuntimeProfile:
     name: str
-    image: str          # tag for now; pass a digest reference to pin (Phase 5)
+    image: str          # pinned reference `repo:tag@sha256:...` (see images.py); the digest is verified before every run
     interpreter: str    # binary used to run a project file / self-checks
     description: str = ""
 
+    @property
+    def label(self) -> str:
+        """Human-readable `repo:tag` without the digest; used in report text so `tool` strings stay as before pinning."""
+        return self.image.split("@", 1)[0]
 
-PYTHON = RuntimeProfile("python", "python:3.12-slim", "python", "CPython 3.12 (Debian slim)")
-NODE = RuntimeProfile("node", "node:22-slim", "node", "Node.js 22 LTS (Debian slim)")
+
+PYTHON = RuntimeProfile("python", PYTHON_IMAGE.reference, "python", "CPython 3.12 (Debian slim)")
+NODE = RuntimeProfile("node", NODE_IMAGE.reference, "node", "Node.js 22 LTS (Debian slim)")
 PROFILES: dict[str, RuntimeProfile] = {p.name: p for p in (PYTHON, NODE)}
 
 

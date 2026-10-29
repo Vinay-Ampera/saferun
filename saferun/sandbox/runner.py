@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 import subprocess
 import threading
 import time
@@ -37,11 +38,44 @@ def validate_command(command) -> list[str]:
     return list(command)
 
 
+_RESERVED_TARGETS = frozenset({"/", "/workspace", "/tmp", "/proc", "/sys", "/dev", "/etc", "/bin", "/usr", "/lib", "/sbin", "/var", "/run"})
+_TARGET_RE = re.compile(r"^/[a-z][a-z0-9_-]{0,31}$")
+
+
+def validate_readonly_mounts(mounts) -> tuple[tuple[Path, str], ...]:
+    """Extra read-only bind mounts (host directory, container path), e.g. a vulnerability database.
+
+    Only existing, absolute host *directories* are accepted (never the filesystem root or a symlink), and the container
+    path must be a single fresh top-level name that is not a system location. They are always mounted read-only and
+    `verify_applied_config` re-checks the exact set Docker applied.
+    """
+    out, seen = [], set()
+    for item in mounts or ():
+        try:
+            src, dst = item
+            src = Path(src)
+        except (TypeError, ValueError):
+            raise SandboxError(f"invalid read-only mount specification: {item!r}") from None
+        if dst in _RESERVED_TARGETS or not isinstance(dst, str) or not _TARGET_RE.match(dst) or dst in seen:
+            raise SandboxError(f"invalid or duplicate read-only mount target: {dst!r}")
+        _check_mount_path(src)
+        if src == Path(src.anchor) or src.is_symlink() or not src.is_dir():
+            raise SandboxError(f"read-only mount source must be an existing real directory (not the root): {str(src)!r}")
+        seen.add(dst)
+        out.append((src, dst))
+    return tuple(out)
+
+
 def build_create_args(
-    name: str, project: Path, command: list[str], image: str, lim: SandboxLimits
+    name: str, project: Path, command: list[str], image: str, lim: SandboxLimits,
+    readonly_mounts: tuple[tuple[Path, str], ...] = (),
 ) -> list[str]:
     """docker-create arguments. Every security control lives here."""
     _check_mount_path(project)
+    extra = []
+    for src, dst in readonly_mounts:
+        _check_mount_path(src)
+        extra += ["--mount", f"type=bind,src={src},dst={dst},readonly"]
     mem = f"{lim.memory_mb}m"
     container_timeout = math.ceil(lim.timeout_s + lim.container_grace_s)
     deadline = int(time.time() + container_timeout + REAP_MARGIN_S)
@@ -54,6 +88,7 @@ def build_create_args(
         "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size={lim.tmpfs_mb}m",
         "--shm-size", f"{lim.shm_mb}m",
         "--mount", f"type=bind,src={project},dst=/workspace,readonly",
+        *extra,
         "--workdir", "/workspace",
         "--entrypoint", "",                       # the image's ENTRYPOINT must not reinterpret our argv
         "--user", f"{SANDBOX_UID}:{SANDBOX_UID}",
@@ -85,8 +120,9 @@ def _drain(stream, cap: int, buf: bytearray, flag: list[bool]) -> None:
 
 
 def _execute(name: str, ws: Workspace, command: list[str], image: str, image_id: str,
-             daemon_statuses: list[ControlStatus], lim: SandboxLimits) -> SandboxResult:
-    r = dk.docker(*build_create_args(name, ws.project, command, image_id, lim))
+             daemon_statuses: list[ControlStatus], lim: SandboxLimits,
+             readonly_mounts: tuple[tuple[Path, str], ...] = ()) -> SandboxResult:
+    r = dk.docker(*build_create_args(name, ws.project, command, image_id, lim, readonly_mounts))
     if r.returncode != 0:
         raise SandboxError(f"docker create failed: {r.stderr.strip()}")
 
@@ -94,7 +130,7 @@ def _execute(name: str, ws: Workspace, command: list[str], image: str, image_id:
     info = dk.inspect(name)
     if not info:
         raise SandboxError("docker create succeeded but the container cannot be inspected")
-    checks = verify_applied_config(info, lim, image_id)
+    checks = verify_applied_config(info, lim, image_id, tuple(dst for _s, dst in readonly_mounts))
     bad = [c for c in checks if c.state != "verified"]
     if bad:
         raise SandboxError("container was not started: applied configuration violates the sandbox policy: "
@@ -186,20 +222,24 @@ def run_sandboxed(
     workspace_limits: WorkspaceLimits | None = None,
     sensitive_policy: SensitivePolicy | None = None,
     allow_degraded: frozenset[str] = frozenset(),
+    readonly_mounts: tuple[tuple[Path, str], ...] = (),
 ) -> SandboxResult:
     """Run `command` (argv, no shell) against a sanitized copy of `project_dir`.
 
     `allow_degraded` names daemon controls (see controls.REQUIRED_DAEMON) the caller accepts
     as unavailable; they are still reported in `SandboxResult.controls`.
+    `readonly_mounts` adds (host directory, container path) bind mounts, always read-only (see validate_readonly_mounts);
+    the network stays disabled whatever is mounted.
     """
     lim = limits or SandboxLimits()
     command = validate_command(command)
+    readonly_mounts = validate_readonly_mounts(readonly_mounts)
     image_id, daemon_statuses = dk.preflight(image, frozenset(allow_degraded))
     ws = create_workspace(project_dir, workspace_limits, sensitive_policy)
     name = f"saferun-{uuid.uuid4().hex[:12]}"
     primary: BaseException | None = None
     try:
-        return _execute(name, ws, command, image, image_id, daemon_statuses, lim)
+        return _execute(name, ws, command, image, image_id, daemon_statuses, lim, readonly_mounts)
     except BaseException as e:
         primary = e
         raise

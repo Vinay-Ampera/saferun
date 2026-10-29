@@ -69,3 +69,10 @@ def require_image(image: str) -> None:
         if REQUIRE_DOCKER:
             pytest.fail(msg, pytrace=False)
         pytest.skip(msg)
+
+
+@pytest.fixture
+def low_osv_floor(monkeypatch):
+    """Small test databases: lower the 'too few advisories' floors (the real floors are exercised in test_osv_db_integrity)."""
+    from saferun.engine import osvdb
+    monkeypatch.setattr(osvdb, "MIN_ENTRIES", {"PyPI": 1, "npm": 1})

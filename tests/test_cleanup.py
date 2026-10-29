@@ -13,7 +13,10 @@ from saferun.sandbox import (
     SandboxError, SandboxLimits, WorkspaceLimits, reap_orphans, run_sandboxed,
 )
 from saferun.sandbox import docker as dk
+from saferun.sandbox.profiles import PYTHON
 from saferun.sandbox.workspace import Workspace, create_workspace
+
+PYTHON_PINNED = PYTHON.image    # a pinned reference: creating a container from it never triggers an implicit pull
 
 pytestmark = pytest.mark.docker
 
@@ -161,7 +164,7 @@ def test_orphan_is_killed_by_container_timeout_then_reaped(tmp_path):
 def test_reaper_never_touches_live_workspace_or_foreign_objects(tmp_path, ws_root):
     src = tmp_path / "src"; src.mkdir()
     ws = create_workspace(src)  # this process holds the flock
-    unrelated = dk.docker("create", "--name", "unrelated-saferun-test", "python:3.12-slim", "true")
+    unrelated = dk.docker("create", "--name", "unrelated-saferun-test", PYTHON_PINNED, "true")
     link_target = tmp_path / "keep"; link_target.mkdir()
     (ws_root / "saferun-ws-symlink").symlink_to(link_target)
     (ws_root / "saferun-ws-young").mkdir()  # no lock file, but fresh: may be mid-creation

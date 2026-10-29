@@ -4,8 +4,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-# Pinned by tag for the PoC; Phase 5 should pin by digest.
-DEFAULT_IMAGE = "python:3.12-slim"
+from .images import PYTHON_IMAGE
+
+DEFAULT_IMAGE = PYTHON_IMAGE.reference  # pinned by digest (Phase 5A)
 SANDBOX_UID = 65534  # "nobody"
 CONTAINER_LABEL = "saferun.sandbox=1"
 DEADLINE_LABEL = "saferun.deadline"  # epoch seconds after which a container is an orphan

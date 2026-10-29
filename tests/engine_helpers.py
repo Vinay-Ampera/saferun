@@ -16,8 +16,8 @@ class FakeRunner:
     def __init__(self, result=None, exc=None):
         self.result, self.exc, self.calls = result, exc, []
 
-    def __call__(self, argv, *, cwd, env, timeout_s, max_output):
-        self.calls.append({"argv": argv, "cwd": cwd, "env": env, "timeout_s": timeout_s})
+    def __call__(self, argv, *, cwd, env=None, timeout_s, max_output, mounts=()):
+        self.calls.append({"argv": argv, "cwd": cwd, "env": env, "timeout_s": timeout_s, "mounts": mounts})
         if self.exc:
             raise self.exc
         return self.result
@@ -32,9 +32,9 @@ def make_ctx(tmp_path: Path, files, runner=None, **kw) -> CheckContext:
         p = proj / f
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("")
-    args = dict(project=proj, home=home, files=list(files))
+    args = dict(project=proj, home=home, files=list(files), analyzer_available=lambda: "sha256:" + "0" * 64)
     if runner is not None:
-        args["run"] = runner
+        args["analyzer"] = runner
     args.update(kw)
     return CheckContext(**args)
 
@@ -87,9 +87,10 @@ def smart_sandbox(node_stdout=None):
 
 
 def overrides(run=None, node_stdout=None):
-    d = {"sandbox": smart_sandbox(node_stdout), "image_available": lambda image: None}
+    d = {"sandbox": smart_sandbox(node_stdout), "image_available": lambda image: None,
+         "analyzer_available": lambda: "sha256:" + "0" * 64}
     if run is not None:
-        d["run"] = run
+        d["analyzer"] = run
     return d
 
 
@@ -99,3 +100,35 @@ def sg_json(results=(), scanned=("app.py", "lib/h.py"), errors=()):
     if scanned is not None:
         d["paths"] = {"scanned": list(scanned)}
     return json.dumps(d)
+
+
+def make_osv_db(root, ecosystems=("PyPI", "npm"), entries=3, age_days=0.0, md5="verified", now=None):
+    """A REAL, internally consistent offline OSV database in `root` (zip files with `entries` advisories + manifest).
+    Tests must lower osvdb.MIN_ENTRIES (see the `low_osv_floor` fixture) for small databases."""
+    import hashlib
+    import io
+    import json
+    import os
+    import time
+    import zipfile
+    from pathlib import Path
+    root = Path(root)
+    now = time.time() if now is None else now
+    manifest = {"schema": 1, "source": "https://example.invalid", "ecosystems": {}}
+    for eco in ecosystems:
+        d = root / "osv-scalibr" / eco
+        d.mkdir(parents=True, exist_ok=True)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for i in range(entries):
+                z.writestr(f"GHSA-test-{i}.json", "{}")
+        data = buf.getvalue()
+        (d / "all.zip").write_bytes(data)
+        os.chmod(d / "all.zip", 0o644)
+        manifest["ecosystems"][eco] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data), "entries": entries,
+                                       "updated_epoch": int(now - age_days * 86400), "updated_at": "test", "md5": md5}
+    for d in (root, root / "osv-scalibr", *[root / "osv-scalibr" / e for e in ecosystems]):
+        os.chmod(d, 0o755)
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    os.chmod(root / "manifest.json", 0o644)
+    return root

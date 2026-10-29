@@ -2,7 +2,7 @@
 
 This verifies that the sandbox can execute a JavaScript file in a separate image under identical
 restrictions. It does not cover npm/dependencies, package.json handling or JS analyzers (later phases).
-Requires the image to be present locally: `docker pull node:22-slim` (SafeRun never pulls itself).
+Requires the pinned image to be present locally: `saferun init --only node` (SafeRun never pulls during a scan).
 """
 import textwrap
 

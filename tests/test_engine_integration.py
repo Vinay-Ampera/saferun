@@ -3,16 +3,16 @@ import shutil
 
 import pytest
 
-from engine_helpers import OSV_JSON, SEMGREP_JSON, FakeRunner, overrides, sg_json, tool_run
+from engine_helpers import OSV_JSON, SEMGREP_JSON, FakeRunner, make_osv_db, overrides, sg_json, tool_run
 from saferun.engine import CheckStatus, ValidationOptions, Verdict, node, osv, pysyntax, semgrep, validate_project
-from saferun.engine.tools import run_tool
 from test_engine_node import BAD, DONE2, OK, out
 
 
 @pytest.fixture
-def tools_present(monkeypatch):
-    monkeypatch.setattr(semgrep, "find_tool", lambda n: "/fake/semgrep")
-    monkeypatch.setattr(osv, "find_tool", lambda n: "/fake/osv-scanner")
+def tools_present(tmp_path, monkeypatch, low_osv_floor):
+    """Analyzers are faked in these tests; give the OSV check a small consistent offline database so it reaches the fake runner."""
+    make_osv_db(tmp_path / "osvdb")
+    monkeypatch.setenv("SAFERUN_OSV_DB", str(tmp_path / "osvdb"))
 
 
 def by_name(rep):
@@ -27,6 +27,16 @@ def project(tmp_path, files):
     return p
 
 
+def _analyzer_built() -> bool:
+    try:
+        from saferun.sandbox.analyzer import verify_analyzer_image
+        verify_analyzer_image()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+ANALYZER_BUILT = _analyzer_built()
 PY_SCANNED = ("app.py", "lib/h.py")
 
 
@@ -66,14 +76,16 @@ def test_node_project_dependency_and_syntax(tmp_path, ws_root, tools_present):
 
 
 def test_all_tools_missing_is_warning_never_pass(tmp_path, ws_root, monkeypatch):
-    monkeypatch.setattr(semgrep, "find_tool", lambda n: None)
-    monkeypatch.setattr(osv, "find_tool", lambda n: None)
     from saferun.sandbox import SandboxError
+    from saferun.sandbox.analyzer import AnalyzerUnavailable
 
     def no_docker(image):
         raise SandboxError("no docker")
+
+    def no_analyzer():
+        raise AnalyzerUnavailable("not built")
     p = project(tmp_path, {"app.py": "x=1\n", "a.js": "", "package-lock.json": "{}"})
-    rep = validate_project(p, ctx_overrides={"image_available": no_docker})
+    rep = validate_project(p, ctx_overrides={"image_available": no_docker, "analyzer_available": no_analyzer})
     assert rep.verdict is Verdict.WARNING and not rep.complete and not rep.findings
     assert {c.status for c in rep.checks if c.analysis} == {CheckStatus.UNAVAILABLE}
     assert "nothing was validated" in " ".join(rep.reasons)
@@ -147,7 +159,8 @@ def test_invalid_project_path_raises(tmp_path):
 
 
 # --- real Semgrep, only if installed (no network needed: local rules) ---
-@pytest.mark.skipif(shutil.which("semgrep") is None, reason="semgrep not installed")
+@pytest.mark.docker
+@pytest.mark.skipif(not ANALYZER_BUILT, reason="analyzer image not built (docker/analyzer/build.sh)")
 def test_real_semgrep_on_bundled_rules(tmp_path, ws_root):
     p = project(tmp_path, {
         "bad.py": "import os, subprocess, pickle\neval(input())\nos.system('ls')\nsubprocess.run('ls', shell=True)\n"
@@ -161,10 +174,3 @@ def test_real_semgrep_on_bundled_rules(tmp_path, ws_root):
             "saferun.python.subprocess-shell-true", "saferun.python.unsafe-deserialization",
             "saferun.python.hardcoded-secret"} <= {f.rule_id for f in c.findings}
     assert rep.verdict is Verdict.FAIL
-
-
-@pytest.mark.skipif(shutil.which("semgrep") is None, reason="semgrep not installed")
-def test_real_semgrep_rules_validate():
-    r = run_tool([shutil.which("semgrep"), "--validate", "--config", str(semgrep.RULES_FILE), "--metrics=off", "--disable-version-check"],
-                 cwd=semgrep.RULES_FILE.parent, env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"}, timeout_s=120)
-    assert r.exit_code == 0, r.stderr[-500:]

@@ -11,8 +11,8 @@ saferun-web = "saferun.api.server:main"   # local dashboard; needs the `web` ext
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx"]   # httpx: FastAPI/Starlette TestClient
-web = ["fastapi>=0.115,<0.141", "uvicorn"]   # <0.141: later fastapi needs opentelemetry-api>=1.44, which conflicts with semgrep
-analysis = ["semgrep"]   # Python static analysis; OSV-Scanner is a separate Go binary (not on PyPI)
+web = ["fastapi>=0.115,<0.141", "uvicorn"]   # upper bound = the range tested; it was originally forced by a conflict with a host-installed Semgrep, which SafeRun no longer uses
+# no "analysis" extra: Semgrep and OSV-Scanner run only inside the analyzer container (docker/analyzer/build.sh), never from the host environment
 
 [tool.setuptools.packages.find]
 include = ["saferun*"]

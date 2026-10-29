@@ -1,11 +1,12 @@
-"""Python static security analysis with Semgrep.
+"""Python static security analysis with Semgrep, run INSIDE the analyzer container (Phase 5B). Never on the host.
 
-Invocation (argv, no shell), run on the sanitized project copy:
-    semgrep scan --json --quiet --metrics=off --disable-version-check --no-git-ignore --disable-nosem --no-rewrite-rule-ids
-           --config <saferun/engine/rules/python.yml> --timeout 10 --max-target-bytes 1000000
+Invocation (argv, no shell), run on the sanitized project copy mounted read-only at /workspace:
+    /usr/local/bin/semgrep scan --json --quiet --metrics=off --disable-version-check --no-git-ignore --disable-nosem --no-rewrite-rule-ids
+           --config /opt/saferun/rules/python.yml --timeout 10 --max-target-bytes 1000000
            --exclude node_modules --exclude .venv --exclude venv --exclude site-packages .
-Only the bundled local rule file is used (no registry, no network, no auto config); project-supplied Semgrep
-configuration is not read. `--disable-nosem` stops `# nosem` comments in untrusted code from hiding findings.
+Only the rule file baked into the verified image is used (no registry, no network, no auto config); project-supplied Semgrep
+configuration is not read. If the analyzer image is missing, locked-but-different, or isolation cannot be set up, the check is
+UNAVAILABLE/ERROR (never clean); there is no host-side fallback. `--disable-nosem` stops `# nosem` comments in untrusted code from hiding findings.
 Exit codes: 0 = scan done (findings do not change it); anything else = operational error.
 
 Coverage is verified, not assumed: Semgrep silently skips files (over --max-target-bytes, or matched by a
@@ -24,7 +25,9 @@ from pathlib import Path
 from .context import CheckContext
 from .model import CheckResult, CheckStatus, Finding, Severity, clean_text
 from .paths import rel_path
-from .tools import ToolUnavailable, build_env, find_tool
+from ..sandbox import SandboxError
+from ..sandbox.analyzer import RULES_PATH, SEMGREP_EXE, AnalyzerIntegrityError
+from .tools import ToolUnavailable
 
 NAME = "python-static-analysis"
 RULES_FILE = Path(__file__).parent / "rules" / "python.yml"
@@ -42,9 +45,9 @@ def _vendored(rel: str) -> bool:
     return any(p in EXCLUDES for p in rel.split("/")[:-1])
 
 
-def build_argv(exe: str, rules: Path = RULES_FILE) -> list[str]:
+def build_argv(exe: str = SEMGREP_EXE, rules: str = RULES_PATH) -> list[str]:
     argv = [exe, "scan", "--json", "--quiet", "--metrics=off", "--disable-version-check", "--no-git-ignore",
-            "--disable-nosem", "--no-rewrite-rule-ids", "--config", str(rules), "--timeout", "10", "--max-target-bytes", "1000000"]
+            "--disable-nosem", "--no-rewrite-rule-ids", "--config", rules, "--timeout", "10", "--max-target-bytes", "1000000"]
     for e in EXCLUDES:
         argv += ["--exclude", e]
     return argv + ["."]
@@ -112,20 +115,25 @@ def run_check(ctx: CheckContext) -> CheckResult:
     targets = python_files(ctx.files)
     if not targets:
         return CheckResult(NAME, CheckStatus.NOT_APPLICABLE, detail="no Python files")
-    exe = find_tool("semgrep")
-    if not exe:
-        return CheckResult(NAME, CheckStatus.UNAVAILABLE, detail="semgrep is not installed (pip install semgrep)",
-                           tool="semgrep")
     if not RULES_FILE.is_file():
         return CheckResult(NAME, CheckStatus.ERROR, detail=f"bundled rule file missing: {RULES_FILE.name}", tool="semgrep")
+    try:
+        ctx.analyzer_available()
+    except AnalyzerIntegrityError as e:
+        return CheckResult(NAME, CheckStatus.ERROR, tool="semgrep",
+                           detail=clean_text(f"analyzer image failed verification; Semgrep was not run (no host fallback): {e}"))
+    except SandboxError as e:
+        return CheckResult(NAME, CheckStatus.UNAVAILABLE, tool="semgrep",
+                           detail=clean_text(f"analyzer image unavailable; Semgrep was not run (no host fallback): {e}"))
     removed = remove_ignore_files(ctx)
     t0 = time.monotonic()
-    env = build_env(ctx.home, extra={"SEMGREP_SEND_METRICS": "off", "SEMGREP_ENABLE_VERSION_CHECK": "0",
-                                    "SEMGREP_SETTINGS_FILE": str(ctx.home / "semgrep-settings.yml")})
     try:
-        run = ctx.run(build_argv(exe), cwd=ctx.project, env=env, timeout_s=ctx.timeout_s, max_output=ctx.max_output)
+        run = ctx.analyzer(build_argv(), cwd=ctx.project, env=None, timeout_s=ctx.timeout_s, max_output=ctx.max_output)
     except ToolUnavailable as e:
         return CheckResult(NAME, CheckStatus.UNAVAILABLE, detail=clean_text(e), tool="semgrep")
+    except SandboxError as e:
+        return CheckResult(NAME, CheckStatus.ERROR, tool="semgrep", duration_s=time.monotonic() - t0,
+                           detail=clean_text(f"isolated analyzer run failed; Semgrep results are not available (no host fallback): {e}"))
     res = CheckResult(NAME, CheckStatus.ERROR, tool="semgrep", duration_s=time.monotonic() - t0)
     if run.timed_out:
         res.status, res.detail = CheckStatus.TIMEOUT, f"semgrep exceeded {ctx.timeout_s:g}s and was killed"

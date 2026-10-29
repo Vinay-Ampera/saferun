@@ -99,3 +99,13 @@ def test_real_sandbox_python_syntax(tmp_path, ws_root):
     assert c.status is CheckStatus.FINDINGS, c.detail
     assert [(f.path, f.line) for f in c.findings] == [("pkg/broken.py", 2)] and "3 Python file(s)" in c.notes[0]
     assert list(ws_root.iterdir()) == []
+
+
+def test_tool_string_is_the_unpinned_label_in_every_path(tmp_path):
+    """Compatibility: report `tool` values must stay `compile() (python:3.12-slim[, sandboxed])`, not carry the digest."""
+    def no(i):
+        raise SandboxError("no docker")
+    assert run(tmp_path, sb(), available=no).tool == "compile() (python:3.12-slim)"
+    assert run(tmp_path, sb("\n".join([OK, BAD, DONE2]))).tool == "compile() (python:3.12-slim, sandboxed)"
+    assert run(tmp_path, sb("junk")).tool == "compile() (python:3.12-slim, sandboxed)"
+    assert PYTHON.label == "python:3.12-slim" and "@" in PYTHON.image   # the image actually used is still the pinned one

@@ -1,29 +1,29 @@
-"""Tests that run the REAL osv-scanner / semgrep binaries (skipped, visibly, when absent).
-Only tests marked `network` need api.osv.dev. Nothing here installs or runs project dependencies."""
-import shutil
-import socket
-
+"""Tests that run the REAL Semgrep / OSV-Scanner INSIDE the analyzer container (Phase 5B).
+Skipped, visibly, when the analyzer image is not built (docker/analyzer/build.sh) or, for OSV result tests, when no offline
+OSV database (`saferun osv-db update`, or SAFERUN_OSV_DB) is available. Nothing needs the network; nothing installs or runs project code."""
 import pytest
 
-from saferun.engine import CheckStatus, ValidationOptions, Verdict, osv, semgrep, validate_project
+from saferun.engine import CheckStatus, ValidationOptions, Verdict, osv, osvdb, semgrep, validate_project
+from saferun.sandbox.analyzer import verify_analyzer_image
 
-HAVE_OSV = shutil.which("osv-scanner") is not None
-HAVE_SEMGREP = shutil.which("semgrep") is not None
+
+def _analyzer() -> bool:
+    try:
+        verify_analyzer_image()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+HAVE_ANALYZER = _analyzer()
+HAVE_DB = HAVE_ANALYZER and osvdb.validate(osvdb.default_dir(), ["PyPI", "npm"]).ok
 OSV_ONLY = ValidationOptions(python_analysis=False, python_syntax=False, javascript_check=False)
 SEMGREP_ONLY = ValidationOptions(python_syntax=False, dependency_scan=False, javascript_check=False)
 
 
-def _network() -> bool:
-    try:
-        socket.create_connection(("api.osv.dev", 443), timeout=5).close()
-        return True
-    except OSError:
-        return False
-
-
-needs_osv = pytest.mark.skipif(not HAVE_OSV, reason="osv-scanner not installed")
-needs_net = pytest.mark.skipif(not HAVE_OSV or not _network(), reason="osv-scanner or api.osv.dev unavailable")
-needs_semgrep = pytest.mark.skipif(not HAVE_SEMGREP, reason="semgrep not installed")
+needs_analyzer = pytest.mark.docker(pytest.mark.skipif(not HAVE_ANALYZER, reason="analyzer image not built"))
+needs_osv = needs_semgrep = pytest.mark.skipif(not HAVE_ANALYZER, reason="analyzer image not built (docker/analyzer/build.sh)")
+needs_net = pytest.mark.skipif(not HAVE_DB, reason="no offline OSV database for PyPI+npm (saferun osv-db update / SAFERUN_OSV_DB)")
 
 
 def proj(tmp_path, files):
@@ -66,34 +66,34 @@ def test_real_osv_clean_result(tmp_path, ws_root):
     assert c.status is CheckStatus.PASSED and not c.findings
 
 
-@needs_osv
-def test_real_osv_empty_lockfile_is_incomplete(tmp_path, ws_root):       # exit 128, no network needed
+@needs_net
+def test_real_osv_empty_lockfile_is_incomplete(tmp_path, ws_root):       # exit 128
     c = osv_check(validate_project(proj(tmp_path, {"package-lock.json": '{"lockfileVersion":3,"packages":{}}'}), OSV_ONLY))
     assert c.status is CheckStatus.INCOMPLETE
 
 
-@needs_osv
-def test_real_osv_malformed_lockfile_is_error(tmp_path, ws_root):        # exit 127, no network needed
+@needs_net
+def test_real_osv_malformed_lockfile_is_error(tmp_path, ws_root):        # exit 127
     rep = validate_project(proj(tmp_path, {"package-lock.json": "not json{"}), OSV_ONLY)
     assert osv_check(rep).status is CheckStatus.ERROR and rep.verdict is Verdict.WARNING
 
 
 @needs_osv
-def test_real_osv_offline_without_database_is_error(tmp_path, ws_root):  # exit 127, no network needed
-    rep = validate_project(proj(tmp_path, {"requirements.txt": "django==2.2.0\n"}), ValidationOptions(**{**vars(OSV_ONLY), "osv_offline": True}))
-    c = osv_check(rep)
-    assert c.status is CheckStatus.ERROR and "offline" in c.detail and not c.findings and rep.verdict is not Verdict.PASS
-
-
-@needs_osv
-def test_real_osv_network_failure_with_clean_looking_json_is_error(tmp_path, ws_root, monkeypatch):
-    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")              # unreachable proxy; exit 127 + {"results": []}
+def test_real_osv_without_database_is_error_and_never_clean(tmp_path, ws_root, monkeypatch):
+    monkeypatch.setenv("SAFERUN_OSV_DB", str(tmp_path / "no-db-here"))
     rep = validate_project(proj(tmp_path, {"requirements.txt": "django==2.2.0\n"}), OSV_ONLY)
     c = osv_check(rep)
-    assert c.status is CheckStatus.ERROR and not c.findings and rep.verdict is Verdict.WARNING and not rep.complete
+    assert c.status is CheckStatus.ERROR and "osv-db update" in c.detail and not c.findings and rep.verdict is Verdict.WARNING
 
 
-@needs_osv
+@needs_net
+def test_real_osv_proxy_settings_cannot_make_it_go_online(tmp_path, ws_root, monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")              # irrelevant: the container has no network and no host env
+    c = osv_check(validate_project(proj(tmp_path, {"requirements.txt": "django==2.2.0\n"}), OSV_ONLY))
+    assert c.status is CheckStatus.FINDINGS
+
+
+@needs_net
 def test_real_osv_timeout(tmp_path, ws_root):
     rep = validate_project(proj(tmp_path, {"requirements.txt": "django==2.2.0\n"}), ValidationOptions(**{**vars(OSV_ONLY), "tool_timeout_s": 0.01}))
     assert osv_check(rep).status is CheckStatus.TIMEOUT

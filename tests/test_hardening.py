@@ -351,7 +351,8 @@ def test_result_carries_verified_controls_and_the_exact_image(proj, ws_root):
     states = {c.name: c.state for c in r.controls}
     assert r.stdout.strip() == "ran" and set(states.values()) <= {"verified", "unavailable"}
     assert states["created-from-resolved-image"] == states["rootfs-read-only"] == states["daemon-seccomp"] == "verified"
-    ident = dk.docker("image", "inspect", "--format", "{{.Id}}", "python:3.12-slim").stdout.strip()
+    from saferun.sandbox.profiles import PYTHON
+    ident = dk.docker("image", "inspect", "--format", "{{.Id}}", PYTHON.image).stdout.strip()      # the pinned digest, not a floating tag
     assert r.image_id == ident
 
 

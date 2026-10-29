@@ -1,10 +1,13 @@
-"""Dependency vulnerability scanning with OSV-Scanner (v2 CLI).
+"""Dependency vulnerability scanning with OSV-Scanner (v2 CLI), run INSIDE the analyzer container (Phase 5B). Never on the host.
 
-Invocation (argv, no shell), run on the sanitized project copy, one process for all files:
-    osv-scanner scan source --format json --no-resolve [--offline] --lockfile=./<lockfile> ...
+Invocation (argv, no shell), in a container with NO network, on the sanitized project copy (read-only /workspace), with the
+offline OSV database directory mounted read-only at /osv-db (see osvdb.py; refreshed only by `saferun osv-db update`):
+    /usr/bin/env XDG_CACHE_HOME=/osv-db /usr/local/bin/osv-scanner scan source --format json --no-resolve
+        --offline --offline-vulnerabilities --lockfile=./<lockfile> ...
 SafeRun never installs or fetches dependencies and never runs install scripts: OSV-Scanner only *reads* files.
-It does contact the OSV.dev API (sending package names/versions, no source code) unless `osv_offline=True`
-(requires locally cached databases; otherwise the tool errors and that is reported as an ERROR, not as clean).
+Scans are always offline: nothing about the project leaves the machine. Without a database for the needed ecosystem the tool errors
+and that is reported as an ERROR (the verdict can never be PASS), with the command that fixes it. The `osv_offline` option is kept only
+for compatibility; online per-scan queries are intentionally not supported (see PROJECT.md, Phase 5B).
 Exit codes: 0 = no vulnerabilities, 1 = vulnerabilities found (JSON on stdout), 128 = no packages found,
 anything else = error.
 
@@ -29,7 +32,12 @@ from pathlib import Path
 from .context import CheckContext
 from .model import CheckResult, CheckStatus, Finding, PackageRef, Severity, clean_text
 from .paths import rel_path
-from .tools import ToolUnavailable, build_env, find_tool
+from ..sandbox import SandboxError
+from ..sandbox.analyzer import OSV_EXE, AnalyzerIntegrityError
+from . import osvdb
+from .tools import ToolUnavailable
+
+DB_MOUNT = "/osv-db"
 
 NAME = "dependency-vulnerabilities"
 PY_LOCKFILES = ("poetry.lock", "Pipfile.lock", "pdm.lock", "uv.lock")
@@ -73,11 +81,10 @@ def discover(files: list[str]) -> tuple[list[str], list[str], list[str]]:
     return locks, unsafe, sorted(gaps)
 
 
-def build_argv(exe: str, lockfiles: list[str], offline: bool = False) -> list[str]:
-    argv = [exe, "scan", "source", "--format", "json", "--no-resolve"]
-    if offline:
-        argv.append("--offline")
-    return argv + [f"--lockfile=./{lf}" for lf in lockfiles]
+def build_argv(lockfiles: list[str], exe: str = OSV_EXE) -> list[str]:
+    """Always offline. `env` sets the cache directory to the read-only database mount (HOME inside the container is a tmpfs)."""
+    return ["/usr/bin/env", f"XDG_CACHE_HOME={DB_MOUNT}", exe, "scan", "source", "--format", "json", "--no-resolve",
+            "--offline", "--offline-vulnerabilities", *[f"--lockfile=./{lf}" for lf in lockfiles]]
 
 
 def _severity(vuln: dict, score_by_id: dict[str, str]) -> Severity:
@@ -220,17 +227,30 @@ def run_check(ctx: CheckContext) -> CheckResult:
     if len(locks) > MAX_LOCKFILES:
         gaps.append(f"{len(locks) - MAX_LOCKFILES} lockfile(s) beyond the limit of {MAX_LOCKFILES} not scanned")
         locks = locks[:MAX_LOCKFILES]
-    exe = find_tool("osv-scanner")
-    if not exe:
-        return CheckResult(NAME, CheckStatus.UNAVAILABLE, tool="osv-scanner", notes=gaps,
-                           detail="osv-scanner is not installed (https://google.github.io/osv-scanner/)")
-    t0 = time.monotonic()
-    env = build_env(ctx.home, network=not ctx.options.get("osv_offline", False))
     try:
-        run = ctx.run(build_argv(exe, locks, bool(ctx.options.get("osv_offline", False))), cwd=ctx.project, env=env,
-                      timeout_s=ctx.timeout_s, max_output=ctx.max_output)
+        ctx.analyzer_available()
+    except AnalyzerIntegrityError as e:
+        return CheckResult(NAME, CheckStatus.ERROR, tool="osv-scanner", notes=gaps,
+                           detail=clean_text(f"analyzer image failed verification; OSV-Scanner was not run (no host fallback): {e}"))
+    except SandboxError as e:
+        return CheckResult(NAME, CheckStatus.UNAVAILABLE, tool="osv-scanner", notes=gaps,
+                           detail=clean_text(f"analyzer image unavailable; OSV-Scanner was not run (no host fallback): {e}"))
+    db_dir = Path(ctx.options.get("osv_db_dir") or osvdb.default_dir())
+    needed = sorted({"npm" if _basename(lf) in NPM_LOCKFILES else "PyPI" for lf in locks})
+    db = osvdb.validate(db_dir, needed, max_age_days=ctx.options.get("osv_db_max_age_days") or osvdb.DEFAULT_MAX_AGE_DAYS)
+    if not db.ok:
+        return CheckResult(NAME, CheckStatus.ERROR, tool="osv-scanner", notes=gaps,
+                           detail=clean_text("the offline OSV vulnerability database cannot be trusted, so dependencies were NOT checked: "
+                                             + "; ".join(db.problems) + ". Fix or refresh it with: saferun osv-db update", 700))
+    t0 = time.monotonic()
+    try:
+        run = ctx.analyzer(build_argv(locks), cwd=ctx.project, env=None, timeout_s=ctx.timeout_s, max_output=ctx.max_output,
+                           mounts=((db_dir, DB_MOUNT),))
     except ToolUnavailable as e:
         return CheckResult(NAME, CheckStatus.UNAVAILABLE, detail=clean_text(e), tool="osv-scanner", notes=gaps)
+    except SandboxError as e:
+        return CheckResult(NAME, CheckStatus.ERROR, tool="osv-scanner", notes=gaps, duration_s=time.monotonic() - t0,
+                           detail=clean_text(f"isolated analyzer run failed; OSV-Scanner results are not available (no host fallback): {e}"))
     res = CheckResult(NAME, CheckStatus.ERROR, tool="osv-scanner", duration_s=time.monotonic() - t0, notes=list(gaps))
     if run.timed_out:
         res.status, res.detail = CheckStatus.TIMEOUT, f"osv-scanner exceeded {ctx.timeout_s:g}s and was killed"
@@ -258,10 +278,14 @@ def run_check(ctx: CheckContext) -> CheckResult:
         if _basename(lf) == "package-lock.json" and (n := npm_unmatched(ctx.project / lf)):
             gaps.append(f"{lf}: {n} package(s) without a registry URL (or from git) cannot be matched by osv-scanner")
             res.notes.append(gaps[-1])
-    res.notes += [f"scanned file(s): {', '.join(locks)}", *_unpinned_notes(ctx, locks)]
+    res.notes += [f"scanned file(s): {', '.join(locks)}", *_unpinned_notes(ctx, locks), *db.notes]   # database facts last: earlier note positions are unchanged
     if gaps:
         res.status = CheckStatus.INCOMPLETE
         res.detail = f"{len(gaps)} dependency file(s) not scanned: " + "; ".join(gaps)[:400]
     else:
         res.status = CheckStatus.FINDINGS if res.findings else CheckStatus.PASSED
+    if db.stale:
+        # valid but old data: findings are kept, but the result can never be a clean PASSED
+        res.detail = clean_text("; ".join(x for x in (res.detail, db.stale) if x), 700)
+        res.status = CheckStatus.INCOMPLETE
     return res
