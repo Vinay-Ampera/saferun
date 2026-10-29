@@ -1,34 +1,56 @@
-# Prebuilt images: what exists, and what must exist first
+# Prebuilt images: what exists, and how the analyzer image is released
 
-`saferun init` installs three kinds of image/data. Only some can be fetched prebuilt today.
+`saferun init` installs three kinds of image/data.
 
-| Component | How `saferun init` gets it today | Trust anchor |
+| Component | How `saferun init` gets it | Trust anchor |
 |---|---|---|
 | Python / Node.js sandbox images | `docker pull python@sha256:… / node@sha256:…` (digest from `saferun/sandbox/images.py`) | The pinned manifest digest, verified again afterwards against the image's `RepoDigests` (`saferun verify-images`). Docker rejects content that does not hash to the digest. |
-| Analyzer image (Semgrep, OSV-Scanner, rules) | **Built locally** with `docker/analyzer/build.sh` | Hash-locked Semgrep wheels, checksum-verified OSV-Scanner, digest-pinned base; the built image's ID is written to an owner-only lock file and re-checked, with tool-version and rules-hash labels, before every use. |
+| Analyzer image (Semgrep, OSV-Scanner, rules) | **Published release** (`ghcr.io/vinay-ampera/saferun-analyzer@sha256:…`, cosign-signed) once one is recorded in `ANALYZER_RELEASE`; until then, and with `--build-local`, **built locally** with `docker/analyzer/build.sh` | Release: the cosign signature (GitHub Actions identity of this repository's release workflow) **and** the pinned digest, then labels/tool versions/rules hash, then an owner-only lock file. Local build: hash-locked wheels, checksum-verified OSV-Scanner, digest-pinned base, owner-only lock file. |
 | OSV vulnerability data | `saferun osv-db update` (HTTPS, public data) | Server MD5 + a locally recorded SHA-256 manifest. Detects corruption and later changes, **not** a malicious server (see `docs/cli.md`). |
 
-## Why the analyzer is not downloaded yet
-No registry, repository or published digest for a SafeRun analyzer image exists, and none is invented here. `saferun/sandbox/images.py` therefore has
-`ANALYZER_RELEASE = None`, and `saferun init` builds locally. The download code path is already in place (`Setup._install_analyzer_release`, covered by tests with a fake Docker)
-and switches on when `ANALYZER_RELEASE` is set.
+**Status:** the publishing workflow, the signature check and the install path are implemented and tested with fakes (Phase 5E). **No release has been published yet**, so `ANALYZER_RELEASE` is
+still `None` and `saferun init` still builds the analyzer locally. The first release is a deliberate maintainer step (below); nothing is published or recorded automatically.
 
-## What maintainers must do before a prebuilt analyzer can be offered
-1. Choose and own a registry repository (for example a GitHub Container Registry package) and decide who may push to it.
-2. Build the image in CI from this repository's recipe (`docker/analyzer/`, the pinned base digest, hash-locked wheels, the rules file of the release) for `linux/amd64`.
-3. Record the pushed **manifest digest** in `ANALYZER_RELEASE` (repository, `sha256:…`, date) in the same commit/tag that contains the rules the image was built with; the
-   image's `saferun.rules.sha256` label must equal that commit's rules hash, so image and code release together.
-4. Strongly recommended: sign the image (cosign) and publish the verification identity; teach `saferun init` to verify the signature before locking. Without a signature the
-   digest in the repository is the only trust anchor (anyone who can change `images.py` can point users at another image).
-5. Document the update policy (when the digest changes, how users re-run `saferun init`) and keep the local build workflow for development and for auditing the published image.
+## How an install of the published image works (active once `ANALYZER_RELEASE` is set)
+1. **Verify the signature first.** `cosign verify --certificate-identity-regexp <identity> --certificate-oidc-issuer https://token.actions.githubusercontent.com --output json <repo>@<digest>`.
+   The identity must be this repository's `release-analyzer.yml` workflow run for a **tag** `analyzer-v<number>[.<number>…]` (a branch, a pull request, another workflow or another
+   repository is refused). SafeRun also checks that the signed payload names exactly this repository and digest. Nothing has been pulled at this point.
+2. `docker pull <repo>@<digest>`; confirm the local image carries exactly that digest in `RepoDigests`.
+3. Tag it `saferun-analyzer:local`; check the labels (Semgrep and OSV-Scanner versions, rules hash equal to this checkout's `python.yml`).
+4. Write the owner-only lock file. Every scan afterwards verifies lock, image ID and labels as before.
 
-What `saferun init` does with a published image (already implemented, inactive): pull `repository@digest` → confirm the pulled image carries exactly that digest → tag it
-`saferun-analyzer:local` → check labels (tool versions, rules hash) → write the owner-only lock → verify with the same function every scan uses. Any failure leaves the image **untrusted** and unlocked.
+Any failure leaves the image **untrusted and unlocked**. There is no unsigned install and no automatic fallback: if `cosign` is not installed or the signature does not verify, `init` says so and
+stops; building locally is an explicit choice (`saferun init --only analyzer --build-local`). `saferun verify-images --signature` repeats step 1 on demand (online).
+
+Requirements on the user's machine: Docker, internet access to `ghcr.io`, `tuf-repo-cdn.sigstore.dev` and `rekor.sigstore.dev` during `init`, and
+[cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 2.2 or newer on `PATH`. cosign runs on the host (argv only, minimal environment, private HOME, 120 s timeout) and parses
+registry/Sigstore data there; that is why the image is not pulled until the signature has verified. Scans never use the network.
+
+## Publishing a release (maintainer)
+One-time setup on GitHub for `Vinay-Ampera/saferun`: Actions enabled; the workflow needs no secrets beyond the automatic `GITHUB_TOKEN` (it asks for `packages: write` and `id-token: write` itself).
+1. Commit and push the repository, including `.github/workflows/release-analyzer.yml`, to `main`.
+2. Push a tag on a `main` commit: `git tag analyzer-v1.0.0 && git push origin analyzer-v1.0.0`. The workflow refuses other tag names and commits not on `main`, builds the image from `docker/analyzer/`
+   (`linux/amd64`, single manifest), pushes `ghcr.io/vinay-ampera/saferun-analyzer:analyzer-v1.0.0`, signs the **digest** (keyless), verifies the signature with the same identity expression SafeRun uses,
+   and prints the digest in the run summary.
+3. **First release only:** make the package public (GitHub → Packages → saferun-analyzer → Package settings → Change visibility → Public). ghcr.io creates packages private, and `saferun init` pulls anonymously.
+4. In a reviewed commit, record it in `saferun/sandbox/images.py`: `ANALYZER_RELEASE = AnalyzerRelease(ANALYZER_REGISTRY_REPOSITORY, "sha256:<digest from the run>", "<date>")`. The rules
+   (`saferun/engine/rules/python.yml`) in that commit must be the ones the tag was built from, otherwise the label check fails for every user (a test and `saferun status` show it).
+5. Check it from a clean machine: `saferun verify-images --signature`, then `saferun init --only analyzer`.
+6. Update policy: a new analyzer version (new Semgrep/OSV-Scanner pin or new rules) is a new tag, a new digest and a new commit; users re-run `saferun init` (status shows the analyzer as invalid/outdated until they do).
+
+## What this does and does not give
+* The digest pins the exact bytes; the signature says those bytes were produced by this repository's release workflow from a tag, recorded in the public Sigstore transparency log. Someone who edits
+  `ANALYZER_RELEASE` to point at another image cannot also produce a signature with the expected identity.
+* It does **not** prove the workflow or repository was free of compromise at release time, that the pinned tools are free of vulnerabilities, or that cosign itself is correct. If the GitHub account
+  or the repository is taken over, new tags could be signed with the expected identity: protect the account (2FA) and review tags.
+* Verification needs cosign and internet at install time. After installation the trust anchor is the local lock file, with the limits stated in `PROJECT.md` (*Phase 5 security status*): the same user, root or
+  a member of the `docker` group can still replace the local image and lock.
+* Not tested against a real cosign binary or a real ghcr.io image (none exists yet); the first release must be followed by step 5.
 
 ## Offline machines
 Prepare on a connected machine and copy: the OSV directory (`saferun osv-db update --dir DIR`, relocatable, then `SAFERUN_OSV_DB=DIR` or place it at the default location) and the
 images (`docker save` / `docker load`). SafeRun trusts a loaded image only if Docker reports the pinned registry digest for it; if your Docker drops repository digests on `docker load`,
 `saferun status` reports the image as invalid. That behaviour has not been tested against every Docker version.
-**The analyzer cannot be installed on a machine that never has internet access yet**: its lock file is written only by a local build or by a verified published-image install, and no
-supported "import a loaded analyzer image" step exists. Until a release with a published digest exists, build it once while online (`saferun init --only analyzer`), or build elsewhere and
+**The analyzer still cannot be installed on a machine that never has internet access**: its lock file is written only by a local build or by a verified published-image install (which needs the
+registry and Sigstore), and no supported "import a loaded analyzer image" step exists. Build it once while online (`saferun init --only analyzer`, or `--build-local`) or build elsewhere and
 rebuild/verify on the target. This is a known gap, not something the setup command works around.

@@ -33,6 +33,13 @@ class World:
         self.free = 10_000 * su.MB
         self.online_ok = True
         self.docker_error = None
+        self.sig_error = None
+
+    def verify_signature(self, rel):
+        self.calls.append(("verify", rel.reference))
+        if self.sig_error:
+            raise self.sig_error
+        return 1
 
     def status(self, key):
         return su.Status(key, self.state[key], "" if self.state[key] == R else f"fake {self.state[key]}")
@@ -64,7 +71,7 @@ class World:
         if self.docker_error:
             raise SandboxError(self.docker_error)
 
-    def setup(self, answers=(), interactive=False):
+    def setup(self, answers=(), interactive=False, build_local=False):
         it = iter(answers)
         out = io.StringIO()
 
@@ -75,7 +82,8 @@ class World:
             except StopIteration:
                 raise EOFError from None
         s = su.Setup(out=out, err=out, ask=ask, interactive=interactive, status=self.status, online=self.online, pull=self.pull,
-                     build=self.build, osv_update=self.osv_update, free_bytes=lambda p: self.free, daemon_check=self.daemon_check)
+                     build=self.build, osv_update=self.osv_update, free_bytes=lambda p: self.free, daemon_check=self.daemon_check,
+                     verify_signature=self.verify_signature, build_local=build_local)
         s.text = out
         return s
 
@@ -430,7 +438,7 @@ def test_progress_is_reported_during_the_download(tmp_path, low_osv_floor):
     assert [line.strip() for line in out.getvalue().splitlines()] == ["npm: 0 / 100 MB (0%)", "npm: 10 / 100 MB (10%)", "npm: 55 / 100 MB (55%)", "npm: 100 / 100 MB (100%)"]
 
 
-# ============================================================ prebuilt analyzer release (dormant until one is published)
+# ============================================================ prebuilt analyzer release (inactive until one is recorded; signature required)
 @pytest.fixture
 def release(monkeypatch, tmp_path):
     rel = im.AnalyzerRelease("registry.invalid/saferun/analyzer", "sha256:" + "d" * 64, "2026-11-01")
@@ -468,7 +476,8 @@ def test_published_release_is_pulled_by_digest_verified_and_locked(world, releas
     lock = os.environ["SAFERUN_ANALYZER_LOCK"]
     assert open(lock).read().strip() == "sha256:" + "e" * 64 and stat.S_IMODE(os.stat(lock).st_mode) == 0o600
     assert ("tag", f"{release.repository}@{release.digest}", sa.ANALYZER_REPO_TAG) in seen
-    assert world.online_hosts == ["registry-1.docker.io"]                               # a published image needs the registry, not pip/github
+    assert world.online_hosts == list(su.HOSTS["release"])                              # the registry and Sigstore, not pip/github
+    assert [c for c in world.calls if c[0] in ("verify", "pull")] == [("verify", release.reference), ("pull", release.reference)]   # verified BEFORE the pull
 
 
 def test_published_release_refused_when_digest_or_labels_do_not_match(world, release, monkeypatch):
@@ -484,8 +493,44 @@ def test_published_release_refused_when_digest_or_labels_do_not_match(world, rel
     assert s.run(["analyzer"]) == 1 and "NOT trusted" in s.text.getvalue() and not os.path.exists(os.environ["SAFERUN_ANALYZER_LOCK"])
 
 
-def test_no_release_is_configured_in_the_repository():
-    assert im.ANALYZER_RELEASE is None                  # if this fails, a maintainer published one: review docs/release-images.md and the digest
+def test_a_bad_or_missing_signature_means_nothing_is_pulled_or_trusted(world, release, monkeypatch):
+    from saferun.sandbox.signature import CosignMissing, SignatureError
+    seen = fake_docker_for_release(monkeypatch, release)
+    for err, expects in ((SignatureError("wrong identity"), ("signature verification failed", "NOT pulled or trusted", "wrong identity")),
+                         (CosignMissing("cosign is not installed"), ("cosign is not installed", "Nothing was pulled", "--build-local"))):
+        w = World()
+        w.state["analyzer"] = M
+        w.sig_error = err
+        s = w.setup()
+        assert s.run(["analyzer"]) == 1
+        assert all(e in s.text.getvalue() for e in expects)
+        assert [c for c in w.calls if c[0] in ("pull", "build")] == [] and seen == []      # no pull, no docker call, no build fallback
+        assert not os.path.exists(os.environ["SAFERUN_ANALYZER_LOCK"])
+
+
+def test_build_local_ignores_the_release_and_does_not_need_cosign_or_ghcr(world, release):
+    world.state["analyzer"] = M
+    s = world.setup(build_local=True)
+    assert s.run(["analyzer"]) == 0
+    assert world.actions().count("build") == 1 and "verify" not in world.actions()
+    assert world.online_hosts == list(su.HOSTS["build"])
+
+
+def test_a_release_without_a_signer_identity_cannot_be_installed(world, release, monkeypatch):
+    from saferun.sandbox import signature
+    monkeypatch.setattr(im, "ANALYZER_RELEASE", im.AnalyzerRelease(release.repository, release.digest, "2026-11-01", signer_identity_regexp=""))
+    world.state["analyzer"] = M
+    s = su.Setup(out=io.StringIO(), status=world.status, online=world.online, pull=world.pull, build=world.build,
+                 daemon_check=world.daemon_check, verify_signature=lambda rel: signature.verify_release_signature(rel, which=lambda: "/x/cosign"))
+    assert s.run(["analyzer"]) == 1 and [c for c in world.calls if c[0] == "pull"] == []
+
+
+def test_the_recorded_release_if_any_is_well_formed():
+    rel = im.ANALYZER_RELEASE
+    if rel is None:
+        return                                          # nothing published yet: `saferun init` builds locally
+    assert rel.repository == im.ANALYZER_REGISTRY_REPOSITORY and im.DIGEST_RE.match(rel.digest)
+    assert rel.signer_identity_regexp == im.ANALYZER_SIGNER_IDENTITY_REGEXP and rel.oidc_issuer == im.GITHUB_OIDC_ISSUER
 
 
 # ============================================================ command line

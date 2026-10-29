@@ -15,14 +15,14 @@ Prints a two-line introduction, shows the components with their state, size and 
 |---|---|---|---|
 | 1 `python` | Python sandbox image | `python-syntax` | `docker pull python@sha256:…` (pinned digest) |
 | 2 `node` | Node.js sandbox image | `javascript-syntax` | `docker pull node@sha256:…` (pinned digest) |
-| 3 `analyzer` | Analyzer image: Semgrep, OSV-Scanner, rules | `python-static-analysis`, `dependency-vulnerabilities` | local build (`docker/analyzer/build.sh`); a prebuilt published image does not exist yet, see [release-images.md](release-images.md) |
+| 3 `analyzer` | Analyzer image: Semgrep, OSV-Scanner, rules | `python-static-analysis`, `dependency-vulnerabilities` | local build (`docker/analyzer/build.sh`) until the first signed release is recorded; then a cosign-verified pull of the published image (`--build-local` forces the local build), see [release-images.md](release-images.md) |
 | 4 `osv-db` | Local OSV vulnerability data | `dependency-vulnerabilities` | `saferun osv-db update` (~260 MB) |
 
 Answer with numbers or names (`1,3`, `all`, `all -osv-db`, `-2`); Enter = all. **Before anything is fetched** each component is verified with the existing checks (image registry digest, analyzer lock + labels + rules hash, OSV
 manifest hashes and age); a valid one is skipped and never rebuilt or re-downloaded, and a tag that merely exists locally is not trusted. Missing, invalid or outdated components are offered for install/repair/update; everything
 installed is verified again afterwards, and a component that does not verify is reported as failed.
 
-Scripts and CI (no prompts): `saferun init --all`, `--only python,node` (several), `--skip osv-db` (everything except), `--yes` (confirm prompts), `--repair` (allow rebuilding an analyzer image that FAILED verification:
+Scripts and CI (no prompts): `saferun init --all`, `--only python,node` (several), `--skip osv-db` (everything except), `--yes` (confirm prompts), `--build-local` (build the analyzer locally even when a signed release exists), `--repair` (allow rebuilding an analyzer image that FAILED verification:
 this replaces the image and its lock, so it is never done silently). Without a flag and without a terminal the command exits 64. Exit codes: 0 every selected component is ready · 1 at least one is not · 64 usage ·
 70 reserved for fatal errors · 130 interrupted. Offline: components that need a download are listed as "no internet access" with preload instructions; valid ones are still used, and nothing else is claimed ready.
 

@@ -2,7 +2,7 @@
 
 Checks AI-generated code before you run or trust it. Executing untrusted code in a sandbox **limits the impact** of that
 code; it does **not** prove the code is safe, and a passing scan does not guarantee security.
-Status: **Phase 5B (analyzer isolation) and 5C (adversarial testing) implemented, awaiting owner review (uncommitted)**. Phases 1-4 are committed baselines (Phase 4: `e4bceef`), not independently certified; Phase 5A (image digest pinning) is implemented and uncommitted. Phase 5D (cleanup/exhaustion hardening) is implemented and uncommitted; Phase 5E (release docs, signing) is not started. **The CLI is the primary product**; the dashboard is a secondary, loopback-only demonstration interface.
+Status: **Phase 5B (analyzer isolation) and 5C (adversarial testing) implemented, awaiting owner review (uncommitted)**. Phases 1-4 are committed baselines (Phase 4: `e4bceef`), not independently certified; Phase 5A (image digest pinning) is implemented and uncommitted. Phase 5D (cleanup/exhaustion hardening) is committed; Phase 5E (signed analyzer release: workflow, cosign verification) is implemented and uncommitted, **no release is published yet**. **The CLI is the primary product**; the dashboard is a secondary, loopback-only demonstration interface.
 
 ## Key features
 - **Restricted Docker sandbox** (Phase 1): read-only sanitized project copy, no network, non-root, no capabilities, resource limits, verified at run time.
@@ -28,7 +28,7 @@ saferun status                    # what is installed and verified (exit 0 only 
 ```
 `saferun init` detects what is already installed (images by pinned digest, the analyzer by lock/labels/rules hash, OSV data by integrity manifest and age), skips what is valid, and offers to install,
 repair or update the rest. For scripts/CI: `saferun init --all`, `--only python,node`, `--skip osv-db`, `--yes`, `--repair` (see [docs/cli.md](docs/cli.md)). The sandbox images are pulled **by
-pinned digest**; the analyzer image is built locally (a published prebuilt image does not exist yet: [docs/release-images.md](docs/release-images.md)); the OSV data is downloaded once
+pinned digest**; the analyzer image is built locally until the first signed release is published (the workflow and cosign verification exist: [docs/release-images.md](docs/release-images.md); `--build-local` always builds); the OSV data is downloaded once
 (about 260 MB) and every scan then runs offline. Developers can still use `docker/analyzer/build.sh` and `saferun osv-db update` directly.
 ```bash
 .venv/bin/pytest -q                        # Docker tests skip (loudly) if Docker is missing

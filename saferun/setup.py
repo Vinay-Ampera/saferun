@@ -26,6 +26,7 @@ from .sandbox import analyzer as sa
 from .sandbox import docker as dk
 from .sandbox import images as im
 from .sandbox import verify as vf
+from .sandbox.signature import CosignMissing, SignatureError, verify_release_signature
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = ROOT / "docker" / "analyzer" / "build.sh"
@@ -56,7 +57,9 @@ BY_KEY = {c.key: c for c in COMPONENTS}
 CHECK_NEEDS = {"python-syntax": ("python",), "javascript-syntax": ("node",), "python-static-analysis": ("analyzer",),
                "dependency-vulnerabilities": ("analyzer", "osv-db")}
 IMAGE_FOR = {"python": im.PYTHON_IMAGE, "node": im.NODE_IMAGE}
-HOSTS = {"image": ("registry-1.docker.io",), "build": ("pypi.org", "github.com"), "osv": ("osv-vulnerabilities.storage.googleapis.com",)}
+HOSTS = {"image": ("registry-1.docker.io",), "build": ("pypi.org", "github.com"), "osv": ("osv-vulnerabilities.storage.googleapis.com",),
+         # a published analyzer: the registry, plus the Sigstore trust root and transparency log that `cosign verify` contacts
+         "release": ("ghcr.io", "tuf-repo-cdn.sigstore.dev", "rekor.sigstore.dev")}
 
 INTRO = ("SafeRun checks a project WITHOUT running it: Python/JavaScript syntax, static analysis (Semgrep) and known-vulnerable dependencies (OSV).\n"
          "Every check runs in a locked-down container and scans work offline; setup fetches what each check needs, once.")
@@ -251,11 +254,13 @@ class Setup:
     """`saferun init`. All side effects go through injectable callables so the workflow is testable without Docker or a network."""
 
     def __init__(self, *, out=None, err=None, ask=input, interactive=False, tty=False, status=component_status, online=network_ok,
-                 pull=docker_pull, build=build_analyzer, osv_update=None, free_bytes=None, daemon_check=None, theme=None):
+                 pull=docker_pull, build=build_analyzer, osv_update=None, free_bytes=None, daemon_check=None, theme=None,
+                 verify_signature=verify_release_signature, build_local=False):
         self.out, self.err = out or sys.stdout, err or sys.stderr
         self.th = theme or ui.PLAIN
         self.ask, self.interactive, self.tty = ask, interactive, tty
         self.status, self.online, self.pull, self.build = status, online, pull, build
+        self.verify_signature, self.build_local = verify_signature, build_local   # build_local: --build-local, never chosen automatically
         self.osv_update = osv_update or self._osv_update
         self.free_bytes = free_bytes or (lambda p: shutil.disk_usage(p).free)
         self.daemon_check = daemon_check or dk.check_local_daemon
@@ -275,10 +280,11 @@ class Setup:
         return "" if rc == 0 else f"docker pull failed (exit {rc})"
 
     def _install_analyzer(self) -> str:
-        rel = im.ANALYZER_RELEASE
+        rel = self._release()
         if rel is not None:
             return self._install_analyzer_release(rel)
-        self.say("    no prebuilt analyzer image has been published yet (docs/release-images.md): building it locally with docker/analyzer/build.sh")
+        self.say("    building the analyzer image locally with docker/analyzer/build.sh" if im.ANALYZER_RELEASE is not None else
+                 "    no prebuilt analyzer image has been published yet (docs/release-images.md): building it locally with docker/analyzer/build.sh")
         if not BUILD_SCRIPT.is_file():
             return ("this installation does not include the build recipe (docker/ is not part of the pip package): "
                     "use a SafeRun repository checkout, or load a published image once one exists")
@@ -287,9 +293,24 @@ class Setup:
             rc = self.build(quiet if sp.enabled else self.say)
         return "" if rc == 0 else f"the analyzer build failed (exit {rc})"
 
+    def _release(self) -> "im.AnalyzerRelease | None":
+        """The published analyzer to install, or None when the local build is to be used (no release exists, or --build-local)."""
+        return None if self.build_local else im.ANALYZER_RELEASE
+
     def _install_analyzer_release(self, rel: im.AnalyzerRelease) -> str:
-        """Dormant until maintainers publish an image (ANALYZER_RELEASE). Pull by digest, verify like a local build, then lock."""
-        ref = f"{rel.repository}@{rel.digest}"
+        """Inactive until a release is recorded in ANALYZER_RELEASE. Verify the cosign signature of `repository@digest` BEFORE anything
+        is pulled, then pull by digest, check the digest again, verify labels/tools/rules like a local build, then lock. Any failure leaves
+        the image untrusted; there is no unsigned install and no automatic fallback to the local build."""
+        ref = rel.reference
+        self.say(f"    verifying the cosign signature of {ref} (expected signer: this repository's release workflow) …")
+        try:
+            self.verify_signature(rel)
+        except CosignMissing as e:
+            return (f"{clean_text(e, 300)}. Nothing was pulled. Install cosign, or build the analyzer yourself with "
+                    "`saferun init --only analyzer --build-local`")
+        except SignatureError as e:
+            return f"signature verification failed, the image was NOT pulled or trusted: {clean_text(e, 300)}"
+        self.say("    signature verified")
         self.say(f"    pulling the published analyzer image {ref} …")
         rc = self.pull(ref)
         if rc != 0:
@@ -370,7 +391,8 @@ class Setup:
                 results[k] = "not installed (declined)"
                 self.say("  " + self._outcome(results[k]))
                 continue
-            hosts = HOSTS["osv"] if k == "osv-db" else HOSTS["build"] if k == "analyzer" and im.ANALYZER_RELEASE is None else HOSTS["image"]
+            hosts = (HOSTS["osv"] if k == "osv-db"
+                     else (HOSTS["release"] if self._release() is not None else HOSTS["build"]) if k == "analyzer" else HOSTS["image"])
             if not all(self.online(h) for h in hosts):
                 offline.append(k)
                 results[k] = "not installed: no internet access"

@@ -41,19 +41,37 @@ NODE_IMAGE = PinnedImage("node", "node", "22-slim",
                          "sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da", "2026-10-29")
 PINNED_IMAGES: tuple[PinnedImage, ...] = (PYTHON_IMAGE, NODE_IMAGE)
 
+# Where the prebuilt analyzer image is published, and WHO may have signed it (Phase 5E).
+# The image is built and pushed by .github/workflows/release-analyzer.yml and signed with cosign "keyless": the signature is bound to
+# the workflow's GitHub OIDC identity, not to a key anyone holds. SafeRun accepts a signature only if the certificate identity matches
+# this expression: that exact repository, that exact workflow file, and a TAG ref `analyzer-v<number>(.<number>)*` (never a branch or
+# a pull request). tests/test_release_signature.py checks the expression against the workflow file.
+ANALYZER_REGISTRY_REPOSITORY = "ghcr.io/vinay-ampera/saferun-analyzer"
+ANALYZER_SIGNER_IDENTITY_REGEXP = (r"^https://github\.com/Vinay-Ampera/saferun/\.github/workflows/release-analyzer\.yml"
+                                   r"@refs/tags/analyzer-v[0-9]+(\.[0-9]+)*$")
+GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+
+
 @dataclass(frozen=True)
 class AnalyzerRelease:
-    """An officially PUBLISHED prebuilt analyzer image: where it lives and the manifest digest it must have.
-    `saferun init` pulls `<repository>@<digest>` (content-addressed: Docker rejects anything else), then applies the same label/tool/rules
-    verification as for a locally built image, and only then locks it."""
-    repository: str      # e.g. "registry.example/org/saferun-analyzer"
-    digest: str          # sha256:<64 hex> of the published manifest (index)
+    """An officially PUBLISHED prebuilt analyzer image: where it lives, the manifest digest it must have, and who must have signed it.
+    `saferun init` first verifies the cosign signature of `<repository>@<digest>` (identity + issuer below), then pulls that reference
+    (content-addressed: Docker rejects anything else), then applies the same label/tool/rules verification as for a locally built
+    image, and only then locks it. A release without a signer identity is refused: there is no unsigned install."""
+    repository: str      # e.g. ANALYZER_REGISTRY_REPOSITORY
+    digest: str          # sha256:<64 hex> of the published manifest
     published_on: str
+    signer_identity_regexp: str = ANALYZER_SIGNER_IDENTITY_REGEXP
+    oidc_issuer: str = GITHUB_OIDC_ISSUER
+
+    @property
+    def reference(self) -> str:
+        return f"{self.repository}@{self.digest}"
 
 
-# NOT SET: no registry, repository or digest has been published by the maintainers, and none is invented here.
-# Until a release exists, `saferun init` builds the analyzer locally with docker/analyzer/build.sh (see docs/release-images.md
-# for what must exist before this can be set).
+# NOT SET until the first release exists: the maintainer runs the release workflow, then records the digest it printed here
+# (repository, `sha256:...`, date) in the commit that contains the rules the image was built with (see docs/release-images.md).
+# While it is None, `saferun init` builds the analyzer locally with docker/analyzer/build.sh.
 ANALYZER_RELEASE: AnalyzerRelease | None = None
 
 # Tools baked into the analyzer image build recipe (docker/analyzer/). Not used at run time yet (Phase 5B).

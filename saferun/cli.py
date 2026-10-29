@@ -106,6 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--max-age-days", type=float, default=osvdb.DEFAULT_MAX_AGE_DAYS, help="older data is reported as stale (default: 30)")
     w.add_argument("--base-only", action="store_true", help="only the python/node base images, not the locally built analyzer image")
     w.add_argument("--only", metavar="NAME[,NAME]", help="only these pinned images (python, node); implies --base-only")
+    w.add_argument("--signature", action="store_true", help="ONLINE: also verify the cosign signature of the published analyzer release "
+                   "(needs cosign and internet; fails if no release is configured)")
     ini = sub.add_parser("init", help="first-run setup: install and verify what the checks need", description=(
         "Interactive (or scripted) setup. Detects what is already installed and verified, skips it, and installs/repairs/updates the rest: "
         "the Python and Node.js sandbox images (pulled by pinned digest), the analyzer image (Semgrep, OSV-Scanner, rules) and the local OSV "
@@ -114,6 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
     ini.add_argument("--only", metavar="COMPONENT[,COMPONENT]", help=f"only these components ({', '.join(setup_mod.KEYS)}), without prompts")
     ini.add_argument("--skip", metavar="COMPONENT[,COMPONENT]", help="exclude these components (everything else if --only is not given), without prompts")
     ini.add_argument("--yes", "-y", action="store_true", help="answer yes to confirmations in interactive mode")
+    ini.add_argument("--build-local", action="store_true", help="build the analyzer image locally (docker/analyzer/build.sh) instead of installing the "
+                     "signed published image; never done automatically")
     ini.add_argument("--repair", action="store_true", help="allow rebuilding an analyzer image that failed verification (it replaces the image and its lock)")
     st = sub.add_parser("status", help="show which components are installed and verified", description=(
         "Verifies every component now (image digests, analyzer lock/labels/rules, OSV data integrity and age). Exit 0 if all selected are ready, 1 otherwise."), parents=[common])
@@ -358,7 +362,8 @@ def _init(args) -> int:
     tty = sys.stdin.isatty() and sys.stdout.isatty()
     if chosen is None and not tty:
         return _fail("not a terminal: choose components with --all, --only or --skip (e.g. `saferun init --all`)", EXIT_USAGE)
-    s = setup_mod.Setup(interactive=chosen is None, tty=sys.stdout.isatty(), theme=ui.theme_for(sys.stdout, args.color))
+    s = setup_mod.Setup(interactive=chosen is None, tty=sys.stdout.isatty(), theme=ui.theme_for(sys.stdout, args.color),
+                        build_local=args.build_local)
     try:
         if chosen is None:
             try:
@@ -384,7 +389,21 @@ def _status(args) -> int:
     return EXIT_PASS if all(x.ready for x in statuses) else EXIT_FAIL
 
 
-def _verify_images(fmt: str, analyzer: bool = True, only: str | None = None) -> int:
+def _check_signature() -> dict:
+    """`verify-images --signature`: the cosign signature of the configured analyzer release (online). Fails closed."""
+    from .sandbox import images as im
+    from .sandbox.signature import SignatureError, verify_release_signature
+    rel = im.ANALYZER_RELEASE
+    if rel is None:
+        return {"ok": False, "reference": "", "detail": "no analyzer release is configured (ANALYZER_RELEASE is not set), so there is nothing to verify"}
+    try:
+        n = verify_release_signature(rel)
+    except SignatureError as e:
+        return {"ok": False, "reference": rel.reference, "detail": str(e)}
+    return {"ok": True, "reference": rel.reference, "detail": f"{rel.reference}: {n} valid signature(s) from the expected release workflow"}
+
+
+def _verify_images(fmt: str, analyzer: bool = True, only: str | None = None, signature: bool = False) -> int:
     from .sandbox.images import PINNED_IMAGES
     names = [n for n in (only or "").replace(",", " ").split() if n]
     unknown = [n for n in names if n not in {i.name for i in PINNED_IMAGES}]
@@ -396,14 +415,21 @@ def _verify_images(fmt: str, analyzer: bool = True, only: str | None = None) -> 
     except SandboxError as e:
         return _fail(f"cannot verify images: {e}", EXIT_FATAL)
     ok = all(c.ok for c in checks)
+    sig = _check_signature() if signature else None
+    if sig is not None:
+        ok = ok and sig["ok"]
     if fmt == "json":
-        sys.stdout.write(json.dumps({"schema_version": 1, "ok": ok, "images": [c.to_dict() for c in checks]},
-                                    indent=2, sort_keys=True) + "\n")
+        doc = {"schema_version": 1, "ok": ok, "images": [c.to_dict() for c in checks]}
+        if sig is not None:
+            doc["signature"] = sig
+        sys.stdout.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
     else:
         for c in checks:
             sys.stdout.write(f"{c.status.upper():<9} {_s(c.reference)}\n")
             if c.detail:
                 sys.stdout.write(f"          {_s(c.detail)}\n")
+        if sig is not None:
+            sys.stdout.write(f"{'VERIFIED' if sig['ok'] else 'FAILED':<9} cosign signature: {_s(sig['detail'])}\n")
         sys.stdout.write("all pinned images verified\n" if ok else "NOT VERIFIED: do not rely on these images\n")
     return EXIT_PASS if ok else EXIT_FAIL
 
@@ -421,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "osv-db":
         return _osv_db(args)
     if args.command == "verify-images":
-        return _verify_images(args.format, analyzer=not (args.base_only or args.only), only=args.only)
+        return _verify_images(args.format, analyzer=not (args.base_only or args.only), only=args.only, signature=args.signature)
     if args.command != "scan":
         parser.print_help(sys.stderr)
         return EXIT_USAGE
