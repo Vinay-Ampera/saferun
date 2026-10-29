@@ -6,7 +6,7 @@
 /** @typedef {'critical'|'high'|'medium'|'low'|'info'|'unknown'} Severity */
 /** @typedef {'passed'|'findings'|'incomplete'|'error'|'timeout'|'unavailable'|'skipped'|'not_applicable'} CheckStatus */
 /** @typedef {'PASS'|'WARNING'|'FAIL'} Verdict */
-/** @typedef {'online'|'offline'|'disabled'} OsvMode */
+/** @typedef {'offline'|'disabled'} OsvMode */
 /** @typedef {'queued'|'running'|'done'|'failed'|'rejected'} JobStatus */
 
 /** @typedef {{name: string, version: string, ecosystem: string}} PackageRef */
@@ -24,7 +24,7 @@
  *   excluded: string[], excluded_total: number}} ArchiveInfo */
 /** @typedef {{id: string, status: JobStatus, osv_mode: OsvMode, created_at: number, archive: ArchiveInfo|null,
  *   error: {code: string, message: string}|null, report?: Report}} Job */
-/** @typedef {{docker_cli: boolean, semgrep: boolean, osv_scanner: boolean,
+/** @typedef {{docker_cli: boolean, analyzer: boolean, semgrep: boolean, osv_scanner: boolean,
  *   queue: {active: number, capacity: number, stored_results: number},
  *   limits: {max_archive_mib: number, max_uncompressed_mib: number, max_entries: number, max_file_mib: number,
  *     job_deadline_s: number, result_ttl_s: number}}} Health */

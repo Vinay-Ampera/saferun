@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixture from '../../fixtures/report.json'
 import { DashboardPage } from './DashboardPage'
 
-const HEALTH = { docker_cli: true, semgrep: true, osv_scanner: false,
+const HEALTH = { docker_cli: true, analyzer: false, semgrep: false, osv_scanner: false,
   queue: { active: 0, capacity: 5, stored_results: 0 },
   limits: { max_archive_mib: 25, max_uncompressed_mib: 100, max_entries: 5000, max_file_mib: 10, job_deadline_s: 600, result_ttl_s: 1800 } }
 
@@ -34,29 +34,30 @@ describe('upload flow', () => {
         archive: { entries: 3, files: 2, dirs: 1, bytes: 2048, stripped_prefix: 'demo', excluded: ['__MACOSX/x'], excluded_total: 1 } })
     })
     render(<DashboardPage pollMs={5} />)
-    await screen.findByText(/Docker|Not found on this machine/)
+    await screen.findByText(/Docker|Not ready on this machine/)
     upload(zip())
     await screen.findByTestId('verdict')
     expect(screen.getByTestId('verdict').textContent).toBe('FAIL')
     expect(screen.getByText(/Single top-level folder/)).toBeTruthy()
     expect(screen.getByText(/1 member\(s\) excluded/)).toBeTruthy()
     const post = calls.find((c) => c.init?.method === 'POST')
-    expect(post.url).toBe('/api/scans?osv=online')
+    expect(post.url).toBe('/api/scans?osv=offline')
     const h = post.init.headers
     expect(h['X-SafeRun-Request']).toBe('1')
     expect(h['Content-Type']).toBe('application/zip')
     expect(post.init.body).toBeInstanceOf(File)
   })
 
-  it('defaults OSV to online with a privacy disclosure, and the choice is sent', async () => {
+  it('defaults OSV to offline (no online option exists), and the choice is sent', async () => {
     mockFetch(() => json({ id: 'x', status: 'queued' }, 202))
     render(<DashboardPage pollMs={1000} />)
-    expect(screen.getByLabelText('Online').checked).toBe(true)
-    expect(screen.getByTestId('osv-note').textContent).toMatch(/OSV\.dev.*sent|sent to OSV\.dev/i)
+    expect(screen.getByLabelText('Offline').checked).toBe(true)
+    expect(screen.queryByLabelText('Online')).toBeNull()
+    expect(screen.getByTestId('osv-note').textContent).toMatch(/without network access/)
     fireEvent.click(screen.getByLabelText('Disabled'))
     expect(screen.getByTestId('osv-note').textContent).toMatch(/skipped.*WARNING/)
     fireEvent.click(screen.getByLabelText('Offline'))
-    expect(screen.getByTestId('osv-note').textContent).toMatch(/Nothing is sent/)
+    expect(screen.getByTestId('osv-note').textContent).toMatch(/nothing is sent/)
     upload(zip())
     await waitFor(() => expect(calls.some((c) => c.init?.method === 'POST')).toBe(true))
     expect(calls.find((c) => c.init?.method === 'POST').url).toBe('/api/scans?osv=offline')
@@ -133,6 +134,6 @@ describe('upload flow', () => {
   it('warns when tools are missing so a WARNING is not a surprise', async () => {
     mockFetch(() => json({}))
     render(<DashboardPage pollMs={5} />)
-    await screen.findByText(/Not found on this machine: osv-scanner/)
+    await screen.findByText(/Not ready on this machine: analyzer image/)
   })
 })

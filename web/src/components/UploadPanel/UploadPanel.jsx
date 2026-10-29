@@ -2,8 +2,7 @@ import { useRef, useState } from 'react'
 import './UploadPanel.css'
 
 const OSV_TEXT = {
-  online: { label: 'Online', note: 'Package names and versions found in lockfiles / requirements.txt are sent to OSV.dev (api.osv.dev) by the machine running SafeRun. No source code is sent.' },
-  offline: { label: 'Offline', note: 'Nothing is sent to OSV.dev. Requires locally cached OSV databases; without them the dependency check reports an error and the verdict is at best WARNING.' },
+  offline: { label: 'Offline', note: 'Runs without network access in an isolated container; nothing is sent anywhere. Needs local OSV data (saferun osv-db update); without it the dependency check reports an error and the verdict is at best WARNING.' },
   disabled: { label: 'Disabled', note: 'The dependency check is skipped and nothing is sent. A skipped check means the verdict is at best WARNING.' },
 }
 
@@ -37,9 +36,9 @@ export function UploadPanel({ busy, health, osv, onOsv, onFile }) {
         <p className="notice" data-testid="osv-note" role="note">{OSV_TEXT[osv].note}</p>
       </fieldset>
       <p className="fine">The archive is checked and never executed on this machine. Archives with unsafe members are refused entirely.</p>
-      {health && (!health.docker_cli || !health.semgrep || !health.osv_scanner) && (
+      {health && (!health.docker_cli || !health.analyzer) && (
         <p className="notice warn" role="status">
-          Not found on this machine: {[!health.docker_cli && 'docker', !health.semgrep && 'semgrep', !health.osv_scanner && 'osv-scanner'].filter(Boolean).join(', ')}.
+          Not ready on this machine: {[!health.docker_cli && 'docker', !health.analyzer && 'analyzer image (run: saferun init --only analyzer)'].filter(Boolean).join(', ')}.
           The matching checks will be reported as unavailable and the verdict will be at best WARNING.
         </p>
       )}

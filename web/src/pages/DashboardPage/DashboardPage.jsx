@@ -15,7 +15,7 @@ const POLL_MS = 1000
 
 export function DashboardPage({ pollMs = POLL_MS }) {
   const [health, setHealth] = useState(null)
-  const [osv, setOsv] = useState('online')
+  const [osv, setOsv] = useState('offline')
   const [phase, setPhase] = useState({ kind: 'idle' })
   const abort = useRef(null)
 
