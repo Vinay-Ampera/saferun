@@ -294,3 +294,13 @@ def test_init_build_local_flag_is_passed_to_setup(monkeypatch):
 def test_no_unsigned_release_can_be_recorded():
     rel = im.ANALYZER_RELEASE
     assert rel is None or (rel.signer_identity_regexp and rel.oidc_issuer)
+
+
+def test_workflow_is_valid_yaml_with_the_expected_shape():
+    """GitHub rejects the whole file on a YAML error (e.g. an unquoted `: ` in a step name), so parse it for real."""
+    ruamel = pytest.importorskip("ruamel.yaml")      # installed with Semgrep in the dev venv; not a declared dependency
+    doc = ruamel.YAML(typ="safe").load(WORKFLOW.read_text())
+    assert doc["on"]["push"]["tags"] == ["analyzer-v*"] and set(doc["on"]) == {"push"}
+    steps = doc["jobs"]["release"]["steps"]
+    assert len(steps) == 10 and all(isinstance(s, dict) and ("uses" in s or "run" in s) for s in steps)
+    assert all(isinstance(s.get("name", ""), str) for s in steps)
