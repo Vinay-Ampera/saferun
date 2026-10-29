@@ -55,7 +55,7 @@ Tests live beside what they test. Plain global class names are used (no CSS modu
 ### Endpoints
 | | |
 |---|---|
-| `POST /api/scans?osv=offline\|disabled` (default `offline`; `online` → `422 osv-online-unsupported`) | body = raw ZIP, `Content-Type: application/zip`, header `X-SafeRun-Request: 1` → `202 {id,status}`. `413` too large · `415` wrong type · `429` queue full (`Retry-After`) · `408` upload too slow · `400/422` malformed |
+| `POST /api/scans?osv=offline\|disabled` (default `offline`; `online` → `422 osv-online-unsupported`) | body = raw ZIP, `Content-Type: application/zip`, header `X-SafeRun-Request: 1` → `202 {id,status}`. `413` too large · `415` wrong type · `429` queue full (`Retry-After`) · `408` upload too slow · `507 insufficient-storage` disk (nearly) full · `400/422` malformed |
 | `GET /api/scans/{id}` | `{id,status,osv_mode,created_at,archive,error,report?}`; status ∈ `queued, running, done, failed, rejected`. HTTP 200 whatever the verdict |
 | `DELETE /api/scans/{id}` | `204` (finished only; `409` if running) |
 | `GET /api/health` | tool availability (booleans), queue occupancy, limits. No paths |
@@ -105,9 +105,15 @@ the loopback port (any local user) can use the dashboard and read results by ID.
 Nothing leaves the machine: scans run offline. There is no OSV *online* mode (it was removed in Phase 5B); `disabled` skips the dependency check (→ WARNING). Refresh the local OSV data with `saferun osv-db update`.
 
 ## Cleanup
-The upload, the extraction directory and the worker's HOME are deleted before a job's result is published. Startup sweeps `saferun-up-*` directories and `saferun-upl-*` files older
-than 40 min (owned by the current user) and calls `reap_orphans()`; a killed or timed-out job triggers `reap_orphans()` again (containers also die by their own container-side timeout).
-A SIGKILLed server leaves its in-flight files until the next startup sweep. **Stopping the server (Ctrl+C) during a scan does not kill the running worker**: it lives in its own session and ends by itself within its own timeouts (the engine deletes its own workspace; the extraction directory is swept at the next start once it is 40 min old).
+The upload, the extraction directory and the worker's HOME are deleted before a job's result is published. A killed or timed-out job triggers `reap_orphans()` (containers also die by their own container-side timeout).
+
+**Server stopped (Ctrl+C / SIGTERM).** A running scan is cancelled, not left behind: the worker's process group gets SIGINT (so the CLI removes its own container and workspace), SIGKILL after 15 s; the job ends `failed` with code `shutdown`, and its upload and extraction directory are deleted. Queued jobs are failed and their uploads deleted.
+
+**Server SIGKILLed.** Nothing can run at that moment, so recovery happens at the next start (Phase 5D). The launcher takes a per-user `flock` (`<tmpdir>/saferun-server-<uid>.lock`, owner and symlink checked; the kernel releases it when the process dies). While it holds the lock no other live server of this user exists, so **every** leftover `saferun-up-*` directory and `saferun-upl-*` file is deleted (not only old ones) and orphaned workers are SIGKILLed first (processes of the same user whose working directory is inside a `saferun-up-*` directory). Then `reap_orphans()` removes abandoned containers and workspaces. If the lock cannot be taken (another server may be running, or the lock file is not ours), only entries older than 40 min are swept, as before. Not covered: a worker's docker containers outlive the kill only until their own container-side timeout.
+
+**Disk full.** An upload is refused with `507 insufficient-storage` when free space in the temp directory is below the declared `Content-Length` plus 64 MiB, and also when the disk fills while the upload is written or the temp file is created (partial files are deleted and the slot is released). Extraction already refuses when free space is below twice the extracted size (`insufficient-space`).
+
+**Hung Docker daemon.** Every Docker CLI call has a timeout (30 s). `/api/health` runs its analyzer check with a 10 s limit, shares one pending check between requests and caches the answer for 5 s, so a hung daemon reports `analyzer: false` instead of piling up threads. A scan whose container cannot be killed because the daemon hangs ends with an error after at most 30 s, our `docker start -a` client process is killed, and the reaper still removes workspaces when it cannot list containers.
 
 ## OSV modes
 `offline` (default): OSV-Scanner runs in the analyzer container without network, reading the local OSV data mounted read-only; verified through the real chain (API -> worker CLI -> engine -> container) with the real osv-scanner 2.7.0. No local data → the dependency check ends in `error`, verdict WARNING, never clean. `disabled` → `skipped`, WARNING. `online` is refused with `422`: a container with network access cannot be restricted to api.osv.dev without a host firewall or egress proxy (see PROJECT.md *Phase 5B*), and SafeRun does not pretend otherwise.

@@ -2,7 +2,7 @@
 
 Checks AI-generated code before you run or trust it. Executing untrusted code in a sandbox **limits the impact** of that
 code; it does **not** prove the code is safe, and a passing scan does not guarantee security.
-Status: **Phase 5B (analyzer isolation) and 5C (adversarial testing) implemented, awaiting owner review (uncommitted)**. Phases 1-4 are committed baselines (Phase 4: `e4bceef`), not independently certified; Phase 5A (image digest pinning) is implemented and uncommitted. Phases 5D (cleanup/exhaustion hardening) and 5E (release docs) are not started. **The CLI is the primary product**; the dashboard is a secondary, loopback-only demonstration interface.
+Status: **Phase 5B (analyzer isolation) and 5C (adversarial testing) implemented, awaiting owner review (uncommitted)**. Phases 1-4 are committed baselines (Phase 4: `e4bceef`), not independently certified; Phase 5A (image digest pinning) is implemented and uncommitted. Phase 5D (cleanup/exhaustion hardening) is implemented and uncommitted; Phase 5E (release docs, signing) is not started. **The CLI is the primary product**; the dashboard is a secondary, loopback-only demonstration interface.
 
 ## Key features
 - **Restricted Docker sandbox** (Phase 1): read-only sanitized project copy, no network, non-root, no capabilities, resource limits, verified at run time.

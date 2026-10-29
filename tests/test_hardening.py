@@ -398,6 +398,10 @@ def test_container_that_will_not_die_after_kill_is_reported_and_cleaned_up(proj,
         stdout, stderr = io.BytesIO(), io.BytesIO()
         def wait(self, timeout=None):
             raise subprocess.TimeoutExpired("docker", timeout)
+        def poll(self):
+            return None
+        def kill(self):
+            pass
     monkeypatch.setattr(runner, "subprocess", SimpleNamespace(
         Popen=lambda *a, **k: StuckClient(), PIPE=subprocess.PIPE, DEVNULL=subprocess.DEVNULL,
         TimeoutExpired=subprocess.TimeoutExpired))

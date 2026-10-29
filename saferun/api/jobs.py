@@ -13,11 +13,14 @@ a whole. Why each preserved variable is needed is documented next to the lists a
 """
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
 import os
 import queue
 import secrets
 import shutil
+import signal
 import stat
 import sys
 import tempfile
@@ -163,6 +166,88 @@ def sweep_stale(max_age_s: float, tmp_root: Path | None = None, now: float | Non
     return removed
 
 
+LOCK_PREFIX = "saferun-server-"
+
+
+def acquire_instance_lock(tmp_root: Path | None = None) -> int | None:
+    """Take the per-user "a dashboard server is running" lock; returns the open fd (hold it for the server's life) or None.
+
+    flock is released by the kernel when the process dies, even by SIGKILL. While we hold it, no other live server of this user
+    owns `saferun-up-*` / `saferun-upl-*` files, so ALL of them are crash debris. None means another server holds it, or the lock
+    file is not ours (wrong owner / not a regular file / symlink): the caller then falls back to the age-based sweep only.
+    """
+    path = os.path.join(tmp_root or tempfile.gettempdir(), f"{LOCK_PREFIX}{os.getuid()}.lock")
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            raise OSError(errno.EPERM, "lock file is not ours")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        os.close(fd)
+        return None
+
+
+def _is_inside(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def kill_orphan_workers(tmp_root: Path | None = None, proc_root: str = "/proc") -> list[int]:
+    """SIGKILL leftover scan workers of a server that was SIGKILLed. Only call while holding the instance lock.
+
+    A worker is a process of ours (same uid, not this process) whose working directory is inside a `saferun-up-*` directory:
+    the job runner starts every worker with cwd = its extraction directory. Returns the pids signalled.
+    """
+    root = os.path.realpath(tmp_root or tempfile.gettempdir())
+    uid, me, killed = os.getuid(), os.getpid(), []
+    try:
+        names = os.listdir(proc_root)
+    except OSError:
+        return killed
+    for name in names:
+        if not name.isdigit() or int(name) == me:
+            continue
+        try:
+            if os.stat(f"{proc_root}/{name}").st_uid != uid:
+                continue
+            cwd = os.readlink(f"{proc_root}/{name}/cwd")
+        except OSError:
+            continue
+        rel = cwd[len(root):].lstrip("/") if _is_inside(cwd, root) else None
+        if rel is None or not rel.split("/", 1)[0].startswith(WORKDIR_PREFIX):
+            continue
+        try:
+            os.kill(int(name), signal.SIGKILL)
+            killed.append(int(name))
+        except OSError:
+            continue
+    return killed
+
+
+@dataclass
+class StartupCleanup:
+    lock_fd: int | None = None        # keep open while serving; None = not the only server (age-based sweep only)
+    removed: list[str] = field(default_factory=list)
+    killed_workers: list[int] = field(default_factory=list)
+
+
+def startup_cleanup(max_age_s: float, tmp_root: Path | None = None) -> StartupCleanup:
+    """Crash recovery at server start. With the instance lock held, every leftover upload / extraction directory is debris and
+    orphaned workers are killed first; without it (another server may be running) only entries older than `max_age_s` go."""
+    out = StartupCleanup(lock_fd=acquire_instance_lock(tmp_root))
+    if out.lock_fd is not None:
+        out.killed_workers = kill_orphan_workers(tmp_root)
+    try:
+        out.removed = sweep_stale(0 if out.lock_fd is not None else max_age_s, tmp_root)
+    except OSError:
+        pass
+    return out
+
+
 @dataclass
 class JobManager:
     limits: JobLimits = field(default_factory=JobLimits)
@@ -177,6 +262,7 @@ class JobManager:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _q: queue.Queue = field(default_factory=queue.Queue, init=False)
     _stop: threading.Event = field(default_factory=threading.Event, init=False)
+    _cancel: threading.Event = field(default_factory=threading.Event, init=False)   # interrupts the running worker
     _thread: threading.Thread | None = field(default=None, init=False)
 
     # ---------------------------------------------------------------- lifecycle
@@ -185,8 +271,11 @@ class JobManager:
             self._thread = threading.Thread(target=self._loop, name="saferun-worker", daemon=True)
             self._thread.start()
 
-    def shutdown(self, timeout: float = 5.0) -> None:
+    def shutdown(self, timeout: float = 30.0) -> None:
+        """Stop the worker thread. A running scan is interrupted (SIGINT to the worker's process group so it can clean up its
+        container and workspace, SIGKILL after a grace period) instead of being left to run on after the server is gone."""
         self._stop.set()
+        self._cancel.set()
         self._q.put(None)
         if self._thread:
             self._thread.join(timeout)
@@ -309,9 +398,11 @@ class JobManager:
             env = worker_env(home, job.osv_mode, self.env_source)
             try:
                 run = self.tool_runner(argv, cwd=ex.workdir, env=env, timeout_s=remaining,
-                                       max_output=self.limits.max_output_bytes)
+                                       max_output=self.limits.max_output_bytes, cancel=self._cancel)
             except ToolUnavailable:
                 return "failed", None, ("worker-unavailable", "the SafeRun worker could not be started"), False
+            if getattr(run, "cancelled", False):
+                return "failed", None, ("shutdown", "the server stopped while the scan was running"), True
             if run.timed_out:
                 return "failed", None, ("deadline", "the job exceeded its time limit and was stopped"), True
             if run.output_truncated:

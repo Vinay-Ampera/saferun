@@ -208,7 +208,7 @@ verified code, and the only second backend considered (OpenSandbox) failed the r
 2. Validation engine (syntax, Semgrep, dependency vulns, normalized report, tests) — **committed (`088b279`)**
 3. CLI — **committed (`a9ea5dc`)**; the primary product
 4. Web dashboard (upload limits, secure handling) — **committed (`e4bceef`)**; local/loopback-only demonstration interface; remote use needs isolated analyzers first
-5. Integration, security testing, release docs — 5A image pinning, 5B analyzer isolation and 5C adversarial tests **implemented, uncommitted, awaiting owner review**; 5D (cleanup/exhaustion hardening) and 5E (release docs, cosign) not started
+5. Integration, security testing, release docs — 5A image pinning, 5B analyzer isolation and 5C adversarial tests **implemented, uncommitted, awaiting owner review**; 5D (cleanup/exhaustion hardening) **implemented, uncommitted, awaiting owner review**; 5E (release docs, cosign) not started
 
 A phase starts only after the previous one's acceptance criteria are met and approved.
 
@@ -252,7 +252,7 @@ kernels/Docker versions/rootless Docker/user-namespace remapping, other CPU arch
 - Coverage cross-check quirk (pre-existing): files whose names contain control characters are reported with sanitized paths, so Semgrep's scanned-file list cannot be matched and the check ends `incomplete` (safe direction, misleading text "e.g. too large").
 - Fixed in 5C: text output could be given extra, forged finding lines by a file name containing a newline / U+2028 (every printed field is now one line; JSON output was never affected).
 - Still no authentication on the dashboard; one scan at a time; resource limits for the analyzer (1.5 GiB, 2 CPUs, 256 pids) are fixed defaults. A second sandbox backend is deferred (the container boundary is Docker-only).
-- Phase 5D items remain open: worker/directory cleanup after a SIGKILLed server, a hung Docker daemon, disk-full paths, a second OS user for the sweeper test.
+- Phase 5D (implemented; see IMPLEMENTATION.md *Phase 5D*): cancel on server stop, instance lock + orphan-worker kill + full sweep after a SIGKILLed server, `507` for disk-full uploads, bounded health probe, reaper/sandbox client behaviour with a hung daemon. Still untested for real: a truly hung `dockerd`, a real full filesystem, a real second OS user (simulated by changing the uid SafeRun sees).
 
 ## Setup workflow (`saferun init`, `saferun status`)
 Implemented in `saferun/setup.py`; it only orchestrates existing verification (pinned-digest image check, analyzer lock/labels/rules hash, OSV manifest validation) and adds no trust of its own.

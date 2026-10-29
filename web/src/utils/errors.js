@@ -19,6 +19,8 @@ const MESSAGES = {
   'comment-too-large': 'The archive comment is too large.',
   'empty-archive': 'The archive contains no files to scan.',
   'insufficient-space': 'The server does not have enough free disk space.',
+  'insufficient-storage': 'The server does not have enough free disk space for this upload.',
+  'shutdown': 'The server stopped while the scan was running. No verdict was produced.',
   'timeout': 'Extraction took too long.',
   'deadline': 'The validation exceeded its time limit and was stopped. No verdict was produced.',
   'no-verdict': 'The validation could not be completed, so there is no verdict. This is not a pass.',

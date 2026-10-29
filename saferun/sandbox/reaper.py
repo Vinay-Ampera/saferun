@@ -31,8 +31,12 @@ class ReapReport:
 
 
 def _reap_containers(now: float, report: ReapReport) -> None:
-    r = dk.docker("ps", "-a", "--filter", f"label={CONTAINER_LABEL}",
-                  "--format", '{{.Names}}\t{{.Label "' + DEADLINE_LABEL + '"}}')
+    try:
+        r = dk.docker("ps", "-a", "--filter", f"label={CONTAINER_LABEL}",
+                      "--format", '{{.Names}}\t{{.Label "' + DEADLINE_LABEL + '"}}')
+    except dk.SandboxError as e:  # daemon hung or the CLI missing: report it, but still reap workspaces
+        report.errors.append(f"could not list containers: {e}")
+        return
     if r.returncode != 0:  # daemon down: say so, do not pretend there was nothing to reap
         report.errors.append(f"could not list containers: {r.stderr.strip()}")
         return

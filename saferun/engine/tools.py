@@ -37,6 +37,7 @@ class ToolRun:
     timed_out: bool = False
     output_truncated: bool = False   # output cap hit: the process was killed, output is incomplete
     duration_s: float = 0.0
+    cancelled: bool = False          # the caller's cancel event fired (server shutdown): the process was interrupted/killed
 
 
 # Signature of the injectable runner; checks take one so tests can substitute canned results.
@@ -88,9 +89,21 @@ def _kill_group(proc: subprocess.Popen) -> None:
         pass
 
 
+def _interrupt_group(proc: subprocess.Popen) -> None:
+    """SIGINT to the process group: lets a SafeRun CLI worker run its own cleanup (container, workspace) before it exits."""
+    try:
+        os.killpg(proc.pid, signal.SIGINT)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def run_tool(argv: list[str], *, cwd: Path, env: dict[str, str], timeout_s: float,
-             max_output: int = DEFAULT_MAX_OUTPUT) -> ToolRun:
-    """Run `argv` (absolute executable, no shell). Raises ToolUnavailable if it cannot be started."""
+             max_output: int = DEFAULT_MAX_OUTPUT, cancel: threading.Event | None = None,
+             cancel_grace_s: float = 15.0) -> ToolRun:
+    """Run `argv` (absolute executable, no shell). Raises ToolUnavailable if it cannot be started.
+
+    `cancel` (optional): when set, the process group gets SIGINT, then SIGKILL after `cancel_grace_s`; the result
+    has `cancelled=True` and no exit code (the run is never usable as a verdict)."""
     argv = validate_argv(argv)
     if not (timeout_s > 0):
         raise ValueError("timeout_s must be positive")
@@ -105,10 +118,18 @@ def run_tool(argv: list[str], *, cwd: Path, env: dict[str, str], timeout_s: floa
                for s, b in ((proc.stdout, out), (proc.stderr, err))]
     for t in readers:
         t.start()
-    timed_out = False
+    timed_out = cancelled = False
     deadline = t0 + timeout_s
     try:
         while proc.poll() is None:
+            if cancel is not None and cancel.is_set():
+                cancelled = True
+                _interrupt_group(proc)
+                grace_end = time.monotonic() + cancel_grace_s
+                while proc.poll() is None and time.monotonic() < grace_end:
+                    time.sleep(0.02)
+                _kill_group(proc)   # also reaps anything the interrupted process left in its group
+                break
             if over.is_set():
                 _kill_group(proc)
                 break
@@ -128,7 +149,8 @@ def run_tool(argv: list[str], *, cwd: Path, env: dict[str, str], timeout_s: floa
         for s in (proc.stdout, proc.stderr):
             s.close()
     return ToolRun(
-        argv=argv, exit_code=None if (timed_out or over.is_set()) else proc.returncode,
+        argv=argv, exit_code=None if (timed_out or cancelled or over.is_set()) else proc.returncode,
         stdout=out.decode("utf-8", "replace"), stderr=err.decode("utf-8", "replace"),
         timed_out=timed_out, output_truncated=over.is_set(), duration_s=time.monotonic() - t0,
+        cancelled=cancelled,
     )

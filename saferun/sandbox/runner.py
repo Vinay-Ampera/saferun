@@ -153,14 +153,25 @@ def _execute(name: str, ws: Workspace, command: list[str], image: str, image_id:
         t.start()
     timed_out = False
     try:
-        proc.wait(timeout=lim.timeout_s)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        dk.docker("kill", name)
         try:
-            proc.wait(timeout=30)
+            proc.wait(timeout=lim.timeout_s)
         except subprocess.TimeoutExpired:
-            raise SandboxError(f"container {name} did not stop within 30 s of being killed") from None
+            timed_out = True
+            try:
+                dk.docker("kill", name)
+            except SandboxError:
+                pass   # daemon hung or unreachable: the client is stopped below and the cleanup step reports what is left
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                raise SandboxError(f"container {name} did not stop within 30 s of being killed") from None
+    finally:
+        if proc.poll() is None:   # never leave our `docker start -a` client behind (hung daemon, error, interrupt)
+            proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
     for t in threads:
         t.join(timeout=5)
     duration = time.monotonic() - t0
