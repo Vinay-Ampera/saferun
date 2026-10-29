@@ -1,0 +1,8 @@
+.guide { flex: 1; width: 100%; max-width: 900px; margin: 0 auto; padding: 1.25rem 1.5rem; display: grid; gap: 1rem; align-content: start; }
+.guide h1 { margin: 0; }
+.guide h2 { margin: 0 0 .5rem; font-size: 1.05rem; }
+.guide ul, .guide ol { margin: 0; padding-left: 1.25rem; display: grid; gap: .4rem; }
+.guide code { font-family: var(--mono); font-size: .85rem; word-break: break-word; }
+.guide table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.guide th, .guide td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+@media (max-width: 860px) { .guide { padding: 1rem 16px; } .guide table { display: block; overflow-x: auto; } }

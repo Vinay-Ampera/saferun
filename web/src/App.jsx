@@ -1,6 +1,14 @@
+import { useEffect, useState } from 'react'
 import { DashboardPage } from './pages/DashboardPage/DashboardPage'
+import { GuidePage } from './pages/GuidePage/GuidePage'
 
-/** The dashboard is a single page; add routing here if more pages are ever needed. */
+/** Two pages, switched by the URL hash (#/guide); no router needed. */
 export function App() {
-  return <DashboardPage />
+  const [hash, setHash] = useState(window.location.hash)
+  useEffect(() => {
+    const on = () => setHash(window.location.hash)
+    window.addEventListener('hashchange', on)
+    return () => window.removeEventListener('hashchange', on)
+  }, [])
+  return hash === '#/guide' ? <GuidePage /> : <DashboardPage />
 }

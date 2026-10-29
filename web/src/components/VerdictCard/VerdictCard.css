@@ -7,3 +7,5 @@
 .verdict-pass .verdict-icon { background: var(--pass-bg); color: var(--pass); } .verdict-warning .verdict-icon { background: var(--warn-bg); color: var(--warn); } .verdict-fail .verdict-icon { background: var(--fail-bg); color: var(--fail); }
 .verdict-word { font-size: 1.9rem; font-weight: 800; letter-spacing: .02em; line-height: 1.1; }
 .reasons { margin: .25rem 0; padding-left: 1.2rem; } .reasons li { margin: .15rem 0; }
+
+.verdict-advice { margin: 0.4rem 0 0; font-weight: 600; }
