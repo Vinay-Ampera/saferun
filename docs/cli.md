@@ -15,7 +15,7 @@ Prints a two-line introduction, shows the components with their state, size and 
 |---|---|---|---|
 | 1 `python` | Python sandbox image | `python-syntax` | `docker pull python@sha256:…` (pinned digest) |
 | 2 `node` | Node.js sandbox image | `javascript-syntax` | `docker pull node@sha256:…` (pinned digest) |
-| 3 `analyzer` | Analyzer image: Semgrep, OSV-Scanner, rules | `python-static-analysis`, `dependency-vulnerabilities` | local build (`docker/analyzer/build.sh`) until the first signed release is recorded; then a cosign-verified pull of the published image (`--build-local` forces the local build), see [release-images.md](release-images.md) |
+| 3 `analyzer` | Analyzer image: Semgrep, OSV-Scanner, rules | `python-static-analysis`, `dependency-vulnerabilities` | cosign-verified pull of the published image (needs `cosign`); `--build-local` builds locally instead (`docker/analyzer/build.sh`), see [release-images.md](release-images.md) |
 | 4 `osv-db` | Local OSV vulnerability data | `dependency-vulnerabilities` | `saferun osv-db update` (~260 MB) |
 
 Answer with numbers or names (`1,3`, `all`, `all -osv-db`, `-2`); Enter = all. **Before anything is fetched** each component is verified with the existing checks (image registry digest, analyzer lock + labels + rules hash, OSV
@@ -84,6 +84,9 @@ Checks that the container images SafeRun runs are present locally with the diges
 pinned_digest, status, detail}]}`; `status` is `verified`, `missing` (the detail gives the exact `docker pull`), `mismatch` or `error`.
 Exit codes: 0 all verified; 1 any image missing, mismatched or uninspectable; 64 usage; 70 Docker unusable (e.g. remote endpoint).
 `saferun scan` itself refuses to start a sandbox run when the image digest does not match (exit 70, no verdict).
+`--signature` (online, needs `cosign` 2.2+) additionally verifies the cosign signature of the published analyzer release (`ANALYZER_RELEASE`): it must come from this repository's
+release workflow on an `analyzer-v*` tag and name exactly the pinned repository and digest. JSON gains a `signature` object `{ok, reference, detail}` only when the flag is given; any failure
+(including cosign missing) makes the exit code 1. See [release-images.md](release-images.md).
 
 See [engine.md](engine.md) for the checks, statuses and verdict rules, and [PROJECT.md](../PROJECT.md) for limitations.
 

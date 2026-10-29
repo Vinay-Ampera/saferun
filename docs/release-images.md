@@ -5,13 +5,14 @@
 | Component | How `saferun init` gets it | Trust anchor |
 |---|---|---|
 | Python / Node.js sandbox images | `docker pull python@sha256:… / node@sha256:…` (digest from `saferun/sandbox/images.py`) | The pinned manifest digest, verified again afterwards against the image's `RepoDigests` (`saferun verify-images`). Docker rejects content that does not hash to the digest. |
-| Analyzer image (Semgrep, OSV-Scanner, rules) | **Published release** (`ghcr.io/vinay-ampera/saferun-analyzer@sha256:…`, cosign-signed) once one is recorded in `ANALYZER_RELEASE`; until then, and with `--build-local`, **built locally** with `docker/analyzer/build.sh` | Release: the cosign signature (GitHub Actions identity of this repository's release workflow) **and** the pinned digest, then labels/tool versions/rules hash, then an owner-only lock file. Local build: hash-locked wheels, checksum-verified OSV-Scanner, digest-pinned base, owner-only lock file. |
+| Analyzer image (Semgrep, OSV-Scanner, rules) | **Published release** (`ghcr.io/vinay-ampera/saferun-analyzer@sha256:3b7adfc9…`, tag `analyzer-v1.0.0`, cosign-signed), recorded in `ANALYZER_RELEASE`; with `--build-local` it is **built locally** with `docker/analyzer/build.sh` instead | Release: the cosign signature (GitHub Actions identity of this repository's release workflow) **and** the pinned digest, then labels/tool versions/rules hash, then an owner-only lock file. Local build: hash-locked wheels, checksum-verified OSV-Scanner, digest-pinned base, owner-only lock file. |
 | OSV vulnerability data | `saferun osv-db update` (HTTPS, public data) | Server MD5 + a locally recorded SHA-256 manifest. Detects corruption and later changes, **not** a malicious server (see `docs/cli.md`). |
 
-**Status:** the publishing workflow, the signature check and the install path are implemented and tested with fakes (Phase 5E). **No release has been published yet**, so `ANALYZER_RELEASE` is
-still `None` and `saferun init` still builds the analyzer locally. The first release is a deliberate maintainer step (below); nothing is published or recorded automatically.
+**Status:** release `analyzer-v1.0.0` was built, pushed and signed by the release workflow (run for commit `f351608`, 2026-10-29) and is recorded in `ANALYZER_RELEASE`
+(`sha256:3b7adfc9b5052d1c7168df8be2cf8a6f5d3da6135d67db813586e1cf43a59508`). `saferun init` therefore installs it, which requires `cosign` (below). The signature check is implemented and tested with
+fakes; **the first real `cosign verify` against this image is the maintainer's step 5 below** and had not been run when this was written. Nothing is published or recorded automatically.
 
-## How an install of the published image works (active once `ANALYZER_RELEASE` is set)
+## How an install of the published image works
 1. **Verify the signature first.** `cosign verify --certificate-identity-regexp <identity> --certificate-oidc-issuer https://token.actions.githubusercontent.com --output json <repo>@<digest>`.
    The identity must be this repository's `release-analyzer.yml` workflow run for a **tag** `analyzer-v<number>[.<number>…]` (a branch, a pull request, another workflow or another
    repository is refused). SafeRun also checks that the signed payload names exactly this repository and digest. Nothing has been pulled at this point.
@@ -32,7 +33,7 @@ One-time setup on GitHub for `Vinay-Ampera/saferun`: Actions enabled; the workfl
 2. Push a tag on a `main` commit: `git tag analyzer-v1.0.0 && git push origin analyzer-v1.0.0`. The workflow refuses other tag names and commits not on `main`, builds the image from `docker/analyzer/`
    (`linux/amd64`, single manifest), pushes `ghcr.io/vinay-ampera/saferun-analyzer:analyzer-v1.0.0`, signs the **digest** (keyless), verifies the signature with the same identity expression SafeRun uses,
    and prints the digest in the run summary.
-3. **First release only:** make the package public (GitHub → Packages → saferun-analyzer → Package settings → Change visibility → Public). ghcr.io creates packages private, and `saferun init` pulls anonymously.
+3. **First release only (done for `analyzer-v1.0.0`):** make the package public (GitHub → Packages → saferun-analyzer → Package settings → Change visibility → Public). ghcr.io creates packages private, and `saferun init` pulls anonymously.
 4. In a reviewed commit, record it in `saferun/sandbox/images.py`: `ANALYZER_RELEASE = AnalyzerRelease(ANALYZER_REGISTRY_REPOSITORY, "sha256:<digest from the run>", "<date>")`. The rules
    (`saferun/engine/rules/python.yml`) in that commit must be the ones the tag was built from, otherwise the label check fails for every user (a test and `saferun status` show it).
 5. Check it from a clean machine: `saferun verify-images --signature`, then `saferun init --only analyzer`.

@@ -92,7 +92,8 @@ class World:
 
 
 @pytest.fixture
-def world():
+def world(monkeypatch):
+    monkeypatch.setattr(im, "ANALYZER_RELEASE", None)     # these tests describe the local-build path; release tests set their own (see `release`)
     return World()
 
 
@@ -230,8 +231,7 @@ def test_installation_that_still_fails_verification_is_a_failure(world):
     assert s.run(["node"]) == 1 and "installed but still missing" in s.text.getvalue()
 
 
-def test_analyzer_missing_is_built_locally_when_no_release_is_published(world):
-    assert im.ANALYZER_RELEASE is None                                               # nothing is invented
+def test_analyzer_missing_is_built_locally_when_no_release_is_configured(world):
     world.state["analyzer"] = M
     s = world.setup()
     assert s.run(["analyzer"]) == 0 and world.calls == [("build",)]
@@ -650,3 +650,10 @@ def test_real_status_of_the_pinned_images_and_init_skips_them(monkeypatch):
                      pull=lambda ref: (_ for _ in ()).throw(AssertionError("no pull")))
     assert setup.run(["python", "node"]) == 0
     assert setup.out.getvalue().count("skipped (already installed and verified)") == 2
+
+
+def test_the_recorded_release_is_the_published_one_and_the_default_install_path_uses_it():
+    rel = im.ANALYZER_RELEASE
+    assert rel is not None and rel.reference == "ghcr.io/vinay-ampera/saferun-analyzer@sha256:3b7adfc9b5052d1c7168df8be2cf8a6f5d3da6135d67db813586e1cf43a59508"
+    s = su.Setup(out=io.StringIO(), build_local=False)
+    assert s._release() is rel and su.Setup(out=io.StringIO(), build_local=True)._release() is None

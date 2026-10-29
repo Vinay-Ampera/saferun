@@ -69,10 +69,11 @@ class AnalyzerRelease:
         return f"{self.repository}@{self.digest}"
 
 
-# NOT SET until the first release exists: the maintainer runs the release workflow, then records the digest it printed here
-# (repository, `sha256:...`, date) in the commit that contains the rules the image was built with (see docs/release-images.md).
-# While it is None, `saferun init` builds the analyzer locally with docker/analyzer/build.sh.
-ANALYZER_RELEASE: AnalyzerRelease | None = None
+# The current release, recorded from the release workflow run (tag analyzer-v1.0.0). To publish a new one, run the workflow and record the digest it
+# prints here (repository, `sha256:...`, date) in the commit that contains the rules the image was built with (docs/release-images.md).
+# If this is None, `saferun init` builds the analyzer locally with docker/analyzer/build.sh.
+ANALYZER_RELEASE: AnalyzerRelease | None = AnalyzerRelease(
+    ANALYZER_REGISTRY_REPOSITORY, "sha256:3b7adfc9b5052d1c7168df8be2cf8a6f5d3da6135d67db813586e1cf43a59508", "2026-10-29")   # tag analyzer-v1.0.0, commit f351608
 
 # Tools baked into the analyzer image build recipe (docker/analyzer/). Not used at run time yet (Phase 5B).
 # The Dockerfile ARG defaults must equal these values; tests enforce it.

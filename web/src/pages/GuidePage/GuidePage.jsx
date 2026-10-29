@@ -19,7 +19,7 @@ const STEPS = [
 const COMPONENTS = [
   { key: 'python', n: 1, title: 'Python sandbox image', does: 'Runs the Python syntax check in a locked-down container.', size: '~190 MB', enables: ['Python syntax'] },
   { key: 'node', n: 2, title: 'Node.js sandbox image', does: 'Runs the JavaScript syntax check in a locked-down container.', size: '~330 MB', enables: ['JavaScript syntax'] },
-  { key: 'analyzer', n: 3, title: 'Analyzer image', does: 'Holds Semgrep, its rules and OSV-Scanner. Runs the static code analysis.', size: '~740 MB, built locally', enables: ['Static analysis', 'Dependency scan'] },
+  { key: 'analyzer', n: 3, title: 'Analyzer image', does: 'Holds Semgrep, its rules and OSV-Scanner. Runs the static code analysis.', size: '~740 MB, signed download', enables: ['Static analysis', 'Dependency scan'] },
   { key: 'osv-db', n: 4, title: 'OSV vulnerability database', does: 'Local vulnerability data, so dependency scans run offline.', size: '~260 MB download', enables: ['Dependency scan'] },
 ]
 
@@ -35,7 +35,9 @@ const COMMANDS = [
   ['Everything, no questions (scripts, CI)', 'saferun init --all', 'Add --yes to confirm prompts automatically.'],
   ['Only some components', 'saferun init --only python,node', 'Names: python, node, analyzer, osv-db.'],
   ['Everything except some', 'saferun init --skip osv-db', 'Use this if you do not need dependency scanning.'],
-  ['Rebuild a failed analyzer', 'saferun init --only analyzer --repair', 'Replaces the analyzer image and its lock. Only when status says INVALID.'],
+  ['Rebuild a failed analyzer', 'saferun init --only analyzer --repair', 'Replaces the analyzer image and its lock with a fresh, signature-checked install. Only when status says INVALID.'],
+  ['Build the analyzer yourself', 'saferun init --only analyzer --build-local', 'Builds it from the repository recipe instead of downloading the signed image. Needs a SafeRun checkout, not cosign. Never done automatically.'],
+  ['Check the analyzer signature again', 'saferun verify-images --signature', 'Online. Needs cosign. Confirms the published analyzer image is signed by this project\'s release workflow.'],
   ['Plain output for logs and CI', 'saferun scan ./my-project --color never', 'Colours, icons and the spinner appear only on a terminal; --format json is always plain. NO_COLOR is honoured.'],
   ['See what is installed', 'saferun status', 'Exit code 0 only when everything is ready. Add --format json for scripts.'],
   ['Update the vulnerability data', 'saferun osv-db update', 'The only command that uses the network. Sends nothing about your project.'],
@@ -55,7 +57,9 @@ const VERDICTS = [
 const FIXES = [
   ['A check says "unavailable", "error" or "incomplete"', 'Run saferun status. It names the component and prints the exact fix, for example saferun init --only osv-db. A scan also prints that fix on stderr.'],
   ['The dashboard shows "Not ready on this machine"', 'The analyzer image is not installed or failed verification. Run saferun init --only analyzer.'],
-  ['A component says INVALID', 'Images are repaired by pulling the pinned digest. The analyzer is rebuilt only with --repair, because that replaces the image and its lock. Investigate first if you did not expect it.'],
+  ['A component says INVALID', 'Images are repaired by pulling the pinned digest. The analyzer is reinstalled only with --repair, because that replaces the image and its lock. Investigate first if you did not expect it.'],
+  ['Setup says cosign is not installed', 'The analyzer is a signed download and SafeRun checks the signature before pulling anything. Install cosign 2.2 or newer and run saferun init --only analyzer again, or build it yourself with saferun init --only analyzer --build-local.'],
+  ['Setup says the signature could not be verified', 'Nothing was pulled or trusted. Check your internet access to ghcr.io and sigstore.dev, then retry. If it keeps failing, do not use --build-local to get around it without finding out why.'],
   ['The dependency scan says incomplete', 'The OSV data is older than 30 days. Run saferun osv-db update. Until then findings are still shown, but the result can never be PASS.'],
   ['Nothing is skipped silently', 'A check whose component is missing is reported, never skipped, and SafeRun never falls back to tools installed on your computer.'],
 ]
@@ -68,12 +72,13 @@ const OFFLINE = [
 const PRELOAD = [
   ['OSV data', 'On a connected machine: saferun osv-db update --dir DIR. Copy DIR over and set SAFERUN_OSV_DB=DIR (or place it at the default location). Check with saferun osv-db status.'],
   ['Sandbox images', 'docker pull on a connected machine, then docker save / docker load. SafeRun trusts a loaded image only if Docker still reports the pinned digest; otherwise status says INVALID.'],
-  ['Analyzer image', 'Cannot be installed without internet yet. Run saferun init --only analyzer once while online.'],
+  ['Analyzer image', 'Cannot be installed without internet yet: the signed download needs ghcr.io and sigstore.dev (and cosign), a local build needs PyPI and GitHub. Run saferun init --only analyzer once while online.'],
 ]
 
 const SAFETY = [
   ['Your project is never executed', 'It is copied read-only into a throwaway container: no network, non-root user, no Linux capabilities, memory, CPU and process limits.'],
   ['Images are pinned by digest', 'An image is trusted only if Docker reports the exact pinned digest. A tag that merely exists is not enough.'],
+  ['The analyzer download is signed', 'SafeRun checks a cosign signature, tied to this project\'s release workflow and a release tag, before it pulls the image, then checks the pinned digest again. A signature does not prove the project itself was never compromised.'],
   ['The analyzer is locked', 'Its image ID, tool versions and rules hash are re-checked before every scan. The lock file must be private to your user.'],
   ['Vulnerability data has an integrity record', 'SHA-256, size, advisory count and date are re-checked before every scan. Damaged, tampered or old data cannot produce PASS.'],
   ['The dashboard stays on your machine', 'It accepts connections only from your own computer (loopback) and has no login.'],

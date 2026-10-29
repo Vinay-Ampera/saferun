@@ -14,6 +14,14 @@ describe('Guide page', () => {
     for (const k of ['python', 'node', 'analyzer', 'osv-db']) expect(text).toContain(k)
   })
 
+  it('documents the signed analyzer release: cosign, --build-local and --signature', () => {
+    const text = render(<GuidePage />).container.textContent
+    for (const c of ['--build-local', 'saferun verify-images --signature', 'cosign is not installed', 'signed download', 'The analyzer download is signed']) {
+      expect(text).toContain(c)
+    }
+    expect(text).not.toMatch(/built locally/)
+  })
+
   it('explains offline operation and missing components, and no longer mentions installing host tools or online OSV', () => {
     const text = render(<GuidePage />).container.textContent
     expect(text).toMatch(/Working offline/)

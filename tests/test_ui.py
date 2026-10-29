@@ -298,13 +298,13 @@ def test_analyzer_build_uses_the_spinner_only_on_a_terminal(monkeypatch):
         log("    build failed; last lines of the log:")
         return 0
     out = io.StringIO()
-    s = su.Setup(out=out, build=build, theme=ui.PLAIN)
+    s = su.Setup(out=out, build=build, theme=ui.PLAIN, build_local=True)     # the local build path (a signed release exists otherwise)
     s._install_analyzer()
     assert "building… 5 s" in out.getvalue()                                      # no terminal: the heartbeat lines are kept
     tty = FakeTTY()
     monkeypatch.setattr(su.sys, "stderr", tty)
     out2 = io.StringIO()
-    s2 = su.Setup(out=out2, build=build, theme=ui.Theme(True))
+    s2 = su.Setup(out=out2, build=build, theme=ui.Theme(True), build_local=True)
     s2._install_analyzer()
     assert "building…" not in out2.getvalue() and "build failed" in out2.getvalue()  # the spinner replaces the heartbeat, failures still print
     assert "Building the analyzer image" in tty.getvalue() and tty.getvalue().endswith("\x1b[?25h")
