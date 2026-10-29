@@ -98,15 +98,14 @@ def test_options_are_passed_to_engine(monkeypatch, proj, capsys):
             o.tool_timeout_s) == (True, False, False, False, False, 30.0)
     cli.main(["scan", str(proj)])
     d = calls[1][1]
-    assert d.dependency_scan and not d.osv_offline and d.python_syntax and d.tool_timeout_s == 120.0
+    assert d.dependency_scan and d.osv_offline and d.python_syntax and d.tool_timeout_s == 120.0
 
 
-def test_osv_disclosure_notice(monkeypatch, proj, capsys):
+def test_no_osv_network_notice_because_scans_are_always_offline(monkeypatch, proj, capsys):
+    """Phase 5B: nothing is sent to OSV.dev, so no disclosure is printed; --osv-offline stays accepted (a no-op)."""
     stub(monkeypatch, PASS_R())
-    cli.main(["scan", str(proj)])
-    assert "OSV.dev" in capsys.readouterr().err
-    for flag in ("--osv-offline", "--no-dependency-scan"):
-        cli.main(["scan", str(proj), flag])
+    for flags in ([], ["--osv-offline"], ["--no-dependency-scan"]):
+        assert cli.main(["scan", str(proj), *flags]) == 0
         assert "OSV.dev" not in capsys.readouterr().err
 
 
