@@ -5,17 +5,35 @@ import './FindingsTable.css'
 
 const PAGE = 100
 
+const HASH = /^[0-9a-f]{40}$/i
+
+/** Real release numbers only: OSV also lists git commit hashes as "fixed in", which are noise for a reader. */
+function releases(f) {
+  return f.fixed_versions.filter((v) => !HASH.test(v)).slice(0, 4)
+}
+
 function FindingRow({ f }) {
+  const [open, setOpen] = useState(false)
+  const msg = txt(f.message)
+  const long = msg.length > 160
+  const fixes = releases(f)
+  const ids = f.vulnerability_ids.map((v) => txt(v, 60))
   return (
     <tr>
       <td><span className={`badge sev-${txt(f.severity, 12).replace(/[^a-z]/g, '')}`}>{txt(f.severity, 12)}</span></td>
-      <td><code>{txt(f.rule_id, 200)}</code><div className="muted small">{txt(f.check, 100)}</div></td>
+      <td className="rule-cell">
+        {f.package
+          ? <><strong>{txt(f.package.name, 100)} {txt(f.package.version, 60)}</strong><div className="muted small">{ids[0] ?? txt(f.rule_id, 200)}</div></>
+          : <><code>{txt(f.rule_id, 200)}</code><div className="muted small">{txt(f.check, 100)}</div></>}
+      </td>
       <td><code className="path">{location(f)}</code></td>
       <td>
-        <div>{txt(f.message)}</div>
+        <div className={long && !open ? 'msg clamp' : 'msg'}>{msg}</div>
+        {long && <button className="link small" onClick={() => setOpen(!open)}>{open ? 'Show less' : 'Show more'}</button>}
         {f.package && <div className="muted small">package: {txt(f.package.name, 100)} {txt(f.package.version, 60)} ({txt(f.package.ecosystem, 40)})</div>}
-        {f.fixed_versions.length > 0 && <div className="muted small">fixed in: {f.fixed_versions.map((v) => txt(v, 60)).join(', ')}</div>}
-        {f.vulnerability_ids.length > 0 && <div className="muted small">{f.vulnerability_ids.map((v) => txt(v, 60)).join(' · ')}</div>}
+        {f.package && fixes.length > 0 && <div className="fix">Fix: upgrade {txt(f.package.name, 100)} - fixed in: {fixes.join(', ')}</div>}
+        {f.package && fixes.length === 0 && <div className="fix">Fix: upgrade {txt(f.package.name, 100)} to a patched release</div>}
+        {ids.length > 0 && <div className="muted small">{ids.join(' · ')}</div>}
         {f.cwe.length > 0 && <div className="muted small">{f.cwe.map((v) => txt(v, 40)).join(', ')}</div>}
       </td>
     </tr>
