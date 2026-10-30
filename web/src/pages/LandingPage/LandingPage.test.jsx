@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../../App'
 import { GITHUB } from '../../content/site'
+import { resetIntroSeen } from '../../components/landing/IntroSplash/IntroSplash'
 import { LandingPage } from './LandingPage'
 
 afterEach(() => { vi.restoreAllMocks(); window.location.hash = '' })
@@ -75,6 +76,33 @@ describe('Landing page', () => {
   it('FAQ covers installation, Docker, Cosign, offline, languages and limits', () => {
     const t = render(<LandingPage />).container.querySelector('#faq').textContent
     for (const k of ['install', 'Docker', 'Cosign', 'internet', 'languages', 'safe']) expect(t).toContain(k)
+  })
+})
+
+describe('Intro', () => {
+  const calm = (reduce) => vi.stubGlobal('matchMedia', () => ({ matches: reduce }))
+  afterEach(() => { vi.unstubAllGlobals(); resetIntroSeen(); document.body.classList.remove('intro-lock') })
+
+  it('plays once, can be skipped, and does not replay when you come back within the same page load', () => {
+    resetIntroSeen(); calm(false)
+    const a = render(<LandingPage />)
+    expect(a.container.parentElement.querySelector('[data-testid=intro]')).not.toBeNull()
+    expect(a.container.querySelector('.shell').className).toContain('intro-on')
+    fireEvent.click(screen.getByRole('button', { name: 'Skip intro' }))
+    expect(document.querySelector('[data-testid=intro]')).toBeNull()
+    expect(a.container.querySelector('.shell').className).not.toContain('intro-on')
+    a.unmount()
+    render(<LandingPage />)
+    expect(document.querySelector('[data-testid=intro]')).toBeNull()
+  })
+
+  it('is skipped with reduced motion and for section links', () => {
+    resetIntroSeen(); calm(true)
+    render(<LandingPage />).unmount()
+    expect(document.querySelector('[data-testid=intro]')).toBeNull()
+    calm(false)
+    render(<LandingPage section="security" />)
+    expect(document.querySelector('[data-testid=intro]')).toBeNull()
   })
 })
 
