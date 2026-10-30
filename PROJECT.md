@@ -208,9 +208,18 @@ verified code, and the only second backend considered (OpenSandbox) failed the r
 2. Validation engine (syntax, Semgrep, dependency vulns, normalized report, tests) — **committed (`088b279`)**
 3. CLI — **committed (`a9ea5dc`)**; the primary product
 4. Web dashboard (upload limits, secure handling) — **committed (`e4bceef`)**; local/loopback-only demonstration interface; remote use needs isolated analyzers first
-5. Integration, security testing, release docs — 5A image pinning, 5B analyzer isolation and 5C adversarial tests **implemented, uncommitted, awaiting owner review**; 5D (cleanup/exhaustion hardening) **implemented, uncommitted, awaiting owner review**; 5E (signed analyzer release: workflow + cosign verification) **implemented and committed; release analyzer-v1.0.0 published and recorded in `ANALYZER_RELEASE`**
+5. Integration, security testing, release docs — 5A image pinning, 5B analyzer isolation, 5C adversarial tests, 5D cleanup/exhaustion hardening and 5E signed analyzer release (workflow + cosign verification) are **implemented and committed**; release `analyzer-v1.0.0` is published and recorded in `ANALYZER_RELEASE`; a real `saferun verify-images --signature` was reported successful by the maintainer on 2026-10-30 (output not stored in the repository)
 
 A phase starts only after the previous one's acceptance criteria are met and approved.
+
+### Remaining work (audit 2026-10-30), in priority order
+1. **Clean-machine end-to-end test** (fresh clone, `pip install`, `saferun init --all`, `status`, `verify-images --signature`, `scan`) — not done.
+2. **CI** for tests, lint and wheel build — only `release-analyzer.yml` exists.
+3. **Packaging**: the wheel builds but has no `[build-system]` table, version is `0.0.1`, and it excludes `web/dist` (the dashboard UI) and `docker/` (`--build-local`). Install from a built wheel is untested.
+4. **Project files**: no LICENSE, CHANGELOG or SECURITY.md.
+5. **Docker-less tests** skip loudly; a job that runs the non-Docker subset should be a CI gate.
+6. **Detection quality**: rules are unmeasured (no false-positive/negative benchmark); JavaScript has only `node --check` and an npm lockfile scan.
+Future enhancements (not release blockers unless a later audit says so): dashboard authentication, gVisor/Kata backend, ARM64 analyzer.
 
 ## Image pinning (Phase 5A)
 - Profiles and `DEFAULT_IMAGE` use `repo:tag@sha256:<index digest>` references from `saferun/sandbox/images.py`. Docker resolves by digest; the tag is only a label.

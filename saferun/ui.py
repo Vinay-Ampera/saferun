@@ -25,6 +25,16 @@ VERDICT_STYLE = {"PASS": ("black", "bold", "bg_green"), "WARNING": ("black", "bo
 SEVERITY_STYLE = {"critical": ("bold", "magenta"), "high": ("bold", "red"), "medium": ("yellow",), "unknown": ("yellow",), "low": ("cyan",), "info": ("dim",)}
 
 
+BANNER = (
+    r" ____         __      ____              ",
+    r"/ ___|  __ _ / _| ___|  _ \ _   _ _ __  ",
+    r"\___ \ / _` | |_ / _ \ |_) | | | | '_ \ ",
+    r" ___) | (_| |  _|  __/  _ <| |_| | | | |",
+    r"|____/ \__,_|_|  \___|_| \_\\__,_|_| |_|",
+)
+BANNER_TAGLINE = "Check AI-generated code before you run or trust it"
+
+
 class Theme:
     def __init__(self, color: bool = False, unicode_ok: bool = True):
         self.on = color

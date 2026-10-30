@@ -308,3 +308,14 @@ def test_analyzer_build_uses_the_spinner_only_on_a_terminal(monkeypatch):
     s2._install_analyzer()
     assert "building…" not in out2.getvalue() and "build failed" in out2.getvalue()  # the spinner replaces the heartbeat, failures still print
     assert "Building the analyzer image" in tty.getvalue() and tty.getvalue().endswith("\x1b[?25h")
+
+
+def test_init_banner_only_on_colour_terminals():
+    from saferun import setup as su
+    import io
+    out = io.StringIO()
+    su.Setup(out=out, theme=ui.Theme(True, True)).show_banner()
+    assert all(line in out.getvalue() for line in ui.BANNER) and ui.BANNER_TAGLINE in out.getvalue()
+    plain = io.StringIO()
+    su.Setup(out=plain, theme=ui.Theme(False, True)).show_banner()
+    assert plain.getvalue() == ""

@@ -22,6 +22,18 @@ describe('Guide page', () => {
     expect(text).not.toMatch(/built locally/)
   })
 
+  it('gives a complete, correct beginner setup: Docker, cosign without sudo, init, status, signature, first scan', () => {
+    const { container } = render(<GuidePage />)
+    const setup = container.querySelector('#setup').textContent
+    for (const c of ['python3 --version', 'docker info', 'install -m 0755 cosign ~/.local/bin/cosign', 'saferun init --all', 'saferun status',
+      'saferun verify-images --signature', 'saferun scan ./my-project']) expect(setup).toContain(c)
+    expect(container.querySelectorAll('.g-walk > li')).toHaveLength(8)
+    expect(setup).toMatch(/SafeRun never downloads cosign for you/)
+    const concepts = container.querySelector('#concepts').textContent
+    for (const c of ['Docker downloads', 'Cosign verifies', 'pinned by digest', 'without network']) expect(concepts).toContain(c)
+    expect(container.querySelector('#fix').textContent).toMatch(/command not found/)
+  })
+
   it('explains offline operation and missing components, and no longer mentions installing host tools or online OSV', () => {
     const text = render(<GuidePage />).container.textContent
     expect(text).toMatch(/Working offline/)
@@ -68,7 +80,7 @@ describe('Guide page', () => {
     window.HTMLElement.prototype.scrollIntoView = scroll
     const before = window.location.hash
     const { container } = render(<GuidePage />)
-    const ids = ['quick-start', 'components', 'commands', 'checks', 'verdicts', 'fix', 'offline', 'safety']
+    const ids = ['quick-start', 'setup', 'concepts', 'components', 'commands', 'checks', 'verdicts', 'fix', 'offline', 'safety']
     const buttons = [...container.querySelectorAll('.g-toc button')]
     expect(buttons).toHaveLength(ids.length)
     for (const id of ids) expect(container.querySelector('#' + id)).not.toBeNull()

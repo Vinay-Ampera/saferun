@@ -362,8 +362,8 @@ def _init(args) -> int:
     tty = sys.stdin.isatty() and sys.stdout.isatty()
     if chosen is None and not tty:
         return _fail("not a terminal: choose components with --all, --only or --skip (e.g. `saferun init --all`)", EXIT_USAGE)
-    s = setup_mod.Setup(interactive=chosen is None, tty=sys.stdout.isatty(), theme=ui.theme_for(sys.stdout, args.color),
-                        build_local=args.build_local)
+    theme = ui.theme_for(sys.stdout, args.color)
+    s = setup_mod.Setup(interactive=chosen is None, tty=sys.stdout.isatty(), theme=theme, build_local=args.build_local)
     try:
         if chosen is None:
             try:
@@ -371,6 +371,8 @@ def _init(args) -> int:
             except ValueError as e:
                 return _fail(str(e), EXIT_USAGE)
         else:
+            for line in setup_mod.banner_lines(theme):
+                s.say(line)
             s.say(setup_mod.INTRO)
             s.say()
         return s.run(chosen, repair=args.repair, assume_yes=args.yes)

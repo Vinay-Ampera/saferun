@@ -6,7 +6,7 @@ import './GuidePage.css'
 const TRUST = ['Your code is never run', 'Scans work offline', 'Locked-down containers', 'Everything is verified']
 
 const TOC = [
-  ['quick-start', 'Quick start'], ['components', 'What gets installed'], ['commands', 'Commands'], ['checks', 'Checks'],
+  ['quick-start', 'Quick start'], ['setup', 'Full setup'], ['concepts', 'How it fits'], ['components', 'What gets installed'], ['commands', 'Commands'], ['checks', 'Checks'],
   ['verdicts', 'Verdicts'], ['fix', 'If something is missing'], ['offline', 'Offline'], ['safety', 'How it stays safe'],
 ]
 
@@ -14,6 +14,49 @@ const STEPS = [
   ['Set up', 'Run saferun init once. It installs only what is missing.', 'saferun init'],
   ['Verify', 'Check that every part is ready and verified.', 'saferun status'],
   ['Scan', 'Scan a folder, or drop a ZIP on the dashboard.', 'saferun scan ./my-project'],
+]
+
+const REQUIREMENTS = [
+  ['Operating system', 'Linux. The analyzer image is linux/amd64 only; ARM64 is not supported yet.'],
+  ['Python', '3.12 or newer, with venv and pip.'],
+  ['Docker', 'A local Docker Engine that your user can reach, with memory, swap, pids and CPU limits and seccomp enabled. Remote Docker endpoints are refused. Docker Desktop is not tested.'],
+  ['Cosign', '2.2 or newer, on your PATH. Needed once, to verify the signed analyzer image. SafeRun does not install it for you.'],
+  ['Internet', 'Only for setup (Docker Hub, ghcr.io, sigstore.dev, the OSV download). Scans never use the network.'],
+  ['Disk space', 'About 1.5 GB for images and vulnerability data.'],
+]
+
+// [title, text, commands, note]
+const WALK = [
+  ['Install Python 3.12 or newer', 'Check what you have. If it is older than 3.12, install a newer one with your package manager.',
+    ['python3 --version', 'sudo apt install python3 python3-venv python3-pip'],
+    'The apt line is for Debian and Ubuntu; other distributions have their own package names. The venv package is needed for the next steps.'],
+  ['Install Docker Engine and start it', 'Docker downloads the images and runs every check in a locked-down container. Follow the official instructions for your distribution, then make sure the daemon runs and your user may use it.',
+    ['docker --version', 'sudo systemctl enable --now docker', 'sudo usermod -aG docker $USER', 'docker info'],
+    'Official instructions: https://docs.docker.com/engine/install/. After usermod, log out and back in. Members of the docker group have root-equivalent access to the machine, so add only users you trust. docker info must print without an error.'],
+  ['Install SafeRun from the repository', 'SafeRun is installed from a checkout. It is not published on PyPI, and Semgrep and OSV-Scanner are not installed on your computer: they live in the analyzer image.',
+    ['git clone https://github.com/Vinay-Ampera/saferun.git', 'cd saferun', 'python3 -m venv .venv', '.venv/bin/pip install -e .', 'source .venv/bin/activate', 'saferun --help'],
+    'Activate the virtual environment (source .venv/bin/activate) in every new terminal. For the dashboard add the web extra: .venv/bin/pip install -e ".[web]".'],
+  ['Install Cosign without sudo', 'Cosign checks that the analyzer image was signed by this project\'s release workflow. Download the official binary into your own bin folder and put that folder on your PATH.',
+    ['mkdir -p ~/.local/bin', 'curl -fsSL -o cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64', 'install -m 0755 cosign ~/.local/bin/cosign', 'export PATH="$HOME/.local/bin:$PATH"', 'cosign version'],
+    'Official page: https://docs.sigstore.dev/cosign/system_config/installation/. Compare sha256sum cosign with the checksums file on the cosign release page if you want to check the download. To keep the PATH change, add the export line to ~/.bashrc. On a machine with sudo you can install cosign with your package manager instead. SafeRun never downloads cosign for you.'],
+  ['Set SafeRun up', 'Installs only what is missing, and verifies each part before trusting it. It pulls the Python and Node.js images by pinned digest, installs the signed analyzer image after checking its signature, and downloads the OSV vulnerability data (about 260 MB).',
+    ['saferun init --all'],
+    'Run saferun init without --all for a menu. If cosign is missing, setup stops at the analyzer and tells you so; nothing is pulled or trusted without a valid signature.'],
+  ['Check that everything is ready', 'Every component should say ready. The exit code is 0 only when all of them are.',
+    ['saferun status'], ''],
+  ['Verify the analyzer signature yourself', 'Repeats the signature check on demand. Online, and needs cosign. The pinned Python and Node.js images are checked as well.',
+    ['saferun verify-images --signature'],
+    'Expect VERIFIED on the cosign line and "all pinned images verified" at the end. Anything else prints NOT VERIFIED: do not rely on the images.'],
+  ['Run your first scan', 'Scans a local folder. Nothing in it is executed, and the scan needs no network.',
+    ['saferun scan ./my-project'],
+    'Exit codes: 0 PASS, 1 FAIL, 2 WARNING (including any incomplete scan), 64 bad usage, 70 fatal error.'],
+]
+
+const CONCEPTS = [
+  ['Docker downloads and runs the images', 'Setup uses it to pull images. Every scan then runs inside containers without network access, with your project mounted read-only.'],
+  ['Cosign verifies the analyzer', 'Before the analyzer image is pulled, cosign checks its signature against this project\'s release workflow and a release tag. The image must also match the digest recorded in SafeRun. There is no unsigned install.'],
+  ['Python and Node.js images are pinned by digest', 'They are trusted only if Docker reports exactly the digest in SafeRun\'s source. A tag that merely exists is not enough. They are not cosign-checked; the digest is their anchor.'],
+  ['Normal scans run without network', 'Setup is the only step that needs the internet (plus saferun osv-db update later). After it, scans work offline against the local OSV data.'],
 ]
 
 const COMPONENTS = [
@@ -55,12 +98,17 @@ const VERDICTS = [
 ]
 
 const FIXES = [
+  ['Setup says Docker is unusable, or docker: command not found', 'Install Docker Engine and start it (sudo systemctl enable --now docker). docker info must work for your user. SafeRun only uses a local daemon and refuses remote ones.'],
+  ['Docker says permission denied', 'Your user is not in the docker group, or the group change is not active yet. Run sudo usermod -aG docker $USER, then log out and back in.'],
+  ['cosign: command not found, although you installed it', 'Its folder is not on your PATH in this terminal. Run export PATH="$HOME/.local/bin:$PATH", check with cosign version, and add the line to ~/.bashrc to keep it.'],
+  ['saferun status shows an image as INVALID', 'Docker does not report the pinned digest for it (for example a tag that moved or an image loaded without its digest). Run saferun init --only python,node to pull the pinned one. Do not ignore an INVALID analyzer: see the --repair entry above.'],
   ['A check says "unavailable", "error" or "incomplete"', 'Run saferun status. It names the component and prints the exact fix, for example saferun init --only osv-db. A scan also prints that fix on stderr.'],
   ['The dashboard shows "Not ready on this machine"', 'The analyzer image is not installed or failed verification. Run saferun init --only analyzer.'],
   ['A component says INVALID', 'Images are repaired by pulling the pinned digest. The analyzer is reinstalled only with --repair, because that replaces the image and its lock. Investigate first if you did not expect it.'],
   ['Setup says cosign is not installed', 'The analyzer is a signed download and SafeRun checks the signature before pulling anything. Install cosign 2.2 or newer and run saferun init --only analyzer again, or build it yourself with saferun init --only analyzer --build-local.'],
   ['Setup says the signature could not be verified', 'Nothing was pulled or trusted. Check your internet access to ghcr.io and sigstore.dev, then retry. If it keeps failing, do not use --build-local to get around it without finding out why.'],
   ['The dependency scan says incomplete', 'The OSV data is older than 30 days. Run saferun osv-db update. Until then findings are still shown, but the result can never be PASS.'],
+  ['Setup says there is no internet access, or you are offline', 'Setup needs Docker Hub, ghcr.io, sigstore.dev and the OSV download once. Without them it keeps what is already valid and lists what is missing. See Working offline below; the analyzer cannot be installed on a machine that never has internet.'],
   ['Nothing is skipped silently', 'A check whose component is missing is reported, never skipped, and SafeRun never falls back to tools installed on your computer.'],
 ]
 
@@ -130,7 +178,32 @@ export function GuidePage() {
               </li>
             ))}
           </ol>
-          <p className="fine">Needs Linux, Python 3.12+ and a local Docker Engine. To use this dashboard: <code>cd web && npm ci --ignore-scripts && npm run build</code>, then <code>saferun-web</code> and open http://127.0.0.1:8765/.</p>
+          <p className="fine">Needs Linux, Python 3.12+, a local Docker Engine and, for the analyzer, cosign: see Full setup below. To use this dashboard: <code>cd web && npm ci --ignore-scripts && npm run build</code>, then <code>saferun-web</code> and open http://127.0.0.1:8765/.</p>
+        </section>
+
+        <section id="setup" className="card g-section">
+          <h2>Full setup, step by step</h2>
+          <p>New to this? Follow these in order. Each command can be copied with its button.</p>
+          <h3>What you need</h3>
+          <dl className="g-defs">{REQUIREMENTS.map(([a, b]) => <div key={a}><dt>{a}</dt><dd>{b}</dd></div>)}</dl>
+          <ol className="g-walk">
+            {WALK.map(([title, text, cmds, note], i) => (
+              <li key={title}>
+                <span className="g-num" aria-hidden="true">{i + 1}</span>
+                <div>
+                  <h3>{title}</h3>
+                  <p>{text}</p>
+                  {cmds.map((c) => <CommandBlock key={c} command={c} />)}
+                  {note && <p className="fine">{note}</p>}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        <section id="concepts" className="card g-section">
+          <h2>How the pieces fit together</h2>
+          <dl className="g-defs">{CONCEPTS.map(([a, b]) => <div key={a}><dt>{a}</dt><dd>{b}</dd></div>)}</dl>
         </section>
 
         <section id="components" className="card g-section">

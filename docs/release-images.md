@@ -10,7 +10,7 @@
 
 **Status:** release `analyzer-v1.0.0` was built, pushed and signed by the release workflow (run for commit `f351608`, 2026-10-29) and is recorded in `ANALYZER_RELEASE`
 (`sha256:3b7adfc9b5052d1c7168df8be2cf8a6f5d3da6135d67db813586e1cf43a59508`). `saferun init` therefore installs it, which requires `cosign` (below). The signature check is implemented and tested with
-fakes; **the first real `cosign verify` against this image is the maintainer's step 5 below** and had not been run when this was written. Nothing is published or recorded automatically.
+fakes. **The maintainer reported a successful real `saferun verify-images --signature` against this image on 2026-10-30** (the output is not stored here); `saferun init --only analyzer` from a clean machine (step 5 below) is still to be recorded. Nothing is published or recorded automatically.
 
 ## How an install of the published image works
 1. **Verify the signature first.** `cosign verify --certificate-identity-regexp <identity> --certificate-oidc-issuer https://token.actions.githubusercontent.com --output json <repo>@<digest>`.
@@ -24,7 +24,7 @@ Any failure leaves the image **untrusted and unlocked**. There is no unsigned in
 stops; building locally is an explicit choice (`saferun init --only analyzer --build-local`). `saferun verify-images --signature` repeats step 1 on demand (online).
 
 Requirements on the user's machine: Docker, internet access to `ghcr.io`, `tuf-repo-cdn.sigstore.dev` and `rekor.sigstore.dev` during `init`, and
-[cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 2.2 or newer on `PATH`. cosign runs on the host (argv only, minimal environment, private HOME, 120 s timeout) and parses
+[cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 2.2 or newer on `PATH` (without sudo: download the `cosign-linux-amd64` release binary and `install -m 0755 cosign ~/.local/bin/cosign`; SafeRun never installs it). cosign runs on the host (argv only, minimal environment, private HOME, 120 s timeout) and parses
 registry/Sigstore data there; that is why the image is not pulled until the signature has verified. Scans never use the network.
 
 ## Publishing a release (maintainer)
@@ -46,7 +46,7 @@ One-time setup on GitHub for `Vinay-Ampera/saferun`: Actions enabled; the workfl
   or the repository is taken over, new tags could be signed with the expected identity: protect the account (2FA) and review tags.
 * Verification needs cosign and internet at install time. After installation the trust anchor is the local lock file, with the limits stated in `PROJECT.md` (*Phase 5 security status*): the same user, root or
   a member of the `docker` group can still replace the local image and lock.
-* Not tested against a real cosign binary or a real ghcr.io image (none exists yet); the first release must be followed by step 5.
+* The signature check ran against a real cosign binary and the real ghcr.io image once (maintainer report, 2026-10-30); a clean-machine `saferun init` from the published image is not yet recorded.
 
 ## Offline machines
 Prepare on a connected machine and copy: the OSV directory (`saferun osv-db update --dir DIR`, relocatable, then `SAFERUN_OSV_DB=DIR` or place it at the default location) and the

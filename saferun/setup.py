@@ -64,6 +64,13 @@ HOSTS = {"image": ("registry-1.docker.io",), "build": ("pypi.org", "github.com")
 INTRO = ("SafeRun checks a project WITHOUT running it: Python/JavaScript syntax, static analysis (Semgrep) and known-vulnerable dependencies (OSV).\n"
          "Every check runs in a locked-down container and scans work offline; setup fetches what each check needs, once.")
 
+def banner_lines(th: "ui.Theme") -> list[str]:
+    """The SafeRun logo, only on a colour-capable terminal: plain, piped and CI output stays exactly as it was."""
+    if not th.on:
+        return []
+    return [th.paint(line, "bold", "cyan") for line in ui.BANNER] + [th.paint(ui.BANNER_TAGLINE, "dim"), ""]
+
+
 PRELOAD_HELP = """\
 To set up without internet access, prepare the missing parts on a connected machine and copy them over:
   * OSV data:   saferun osv-db update --dir /path/to/osv-db      (copy the whole directory, then: export SAFERUN_OSV_DB=/path/to/osv-db  or  place it at {osv_dir})
@@ -265,6 +272,10 @@ class Setup:
         self.free_bytes = free_bytes or (lambda p: shutil.disk_usage(p).free)
         self.daemon_check = daemon_check or dk.check_local_daemon
 
+    def show_banner(self) -> None:
+        for line in banner_lines(self.th):
+            self.say(line)
+
     def say(self, text: str = "") -> None:
         self.out.write(text + "\n")
         self.out.flush()
@@ -459,6 +470,7 @@ class Setup:
 
     def choose(self) -> list[str]:
         """Interactive menu. Returns the selected keys; raises ValueError after three invalid answers."""
+        self.show_banner()
         self.say(INTRO)
         self.say()
         statuses = {k: self.status(k) for k in KEYS}

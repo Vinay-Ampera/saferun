@@ -2,7 +2,7 @@
 
 Checks AI-generated code before you run or trust it. Executing untrusted code in a sandbox **limits the impact** of that
 code; it does **not** prove the code is safe, and a passing scan does not guarantee security.
-Status: **Phase 5B (analyzer isolation) and 5C (adversarial testing) implemented, awaiting owner review (uncommitted)**. Phases 1-4 are committed baselines (Phase 4: `e4bceef`), not independently certified; Phase 5A (image digest pinning) is implemented and uncommitted. Phase 5D (cleanup/exhaustion hardening) is committed; Phase 5E (signed analyzer release: workflow, cosign verification) is committed; release `analyzer-v1.0.0` is published and recorded (uncommitted: the recording itself). The first real cosign verification is still to be run. **The CLI is the primary product**; the dashboard is a secondary, loopback-only demonstration interface.
+Status: Phases 1-4 and 5A-5E are implemented and committed (not independently certified). The signed analyzer release `analyzer-v1.0.0` is published and recorded; the maintainer reports a successful real `saferun verify-images --signature` on 2026-10-30. Not yet done: a clean-machine install test, CI, a built-wheel install test, a detection-quality benchmark and broader JavaScript rules (see *Remaining work* in [PROJECT.md](PROJECT.md)). **The CLI is the primary product**; the dashboard is a secondary, loopback-only demonstration interface.
 
 ## Key features
 - **Restricted Docker sandbox** (Phase 1): read-only sanitized project copy, no network, non-root, no capabilities, resource limits, verified at run time.
@@ -23,12 +23,12 @@ Images must provide `timeout` and `sh`, and must not declare `VOLUME`.
 ## Install and set up
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'   # needs python3-venv/pip; Semgrep and OSV-Scanner are NOT needed on the host
-saferun init                      # first run: short intro, pick components, installs only what is missing or invalid
+saferun init                      # first run: logo (on a colour terminal), short intro, pick components, installs only what is missing or invalid
 saferun status                    # what is installed and verified (exit 0 only if everything is ready)
 ```
 `saferun init` detects what is already installed (images by pinned digest, the analyzer by lock/labels/rules hash, OSV data by integrity manifest and age), skips what is valid, and offers to install,
 repair or update the rest. For scripts/CI: `saferun init --all`, `--only python,node`, `--skip osv-db`, `--yes`, `--repair` (see [docs/cli.md](docs/cli.md)). The sandbox images are pulled **by
-pinned digest**; the analyzer image is installed from the cosign-signed published release (needs `cosign`; [docs/release-images.md](docs/release-images.md)); `--build-local` builds it locally instead; the OSV data is downloaded once
+pinned digest**; the analyzer image is installed from the cosign-signed published release (needs `cosign` 2.2+ on your PATH; SafeRun does not install it, no sudo needed: see the Full setup section of the dashboard guide; [docs/release-images.md](docs/release-images.md)); `--build-local` builds it locally instead; the OSV data is downloaded once
 (about 260 MB) and every scan then runs offline. Developers can still use `docker/analyzer/build.sh` and `saferun osv-db update` directly.
 ```bash
 .venv/bin/pytest -q                        # Docker tests skip (loudly) if Docker is missing
