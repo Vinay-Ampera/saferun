@@ -2,29 +2,25 @@
    (.card, .card-head, .stack, buttons, tables, .badge, severity colours, .kpis, .notice, .error, details).
    Everything specific to one component lives in that component's folder next to its .tsx file. */
 :root {
-  --bg: #f4f6f9; --surface: #ffffff; --surface-2: #f8fafc; --border: #dde3ea; --text: #17202c; --muted: #5b6776;
-  --accent: #2457d6; --accent-ink: #ffffff; --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 8%);
-  --pass: #137a3d; --pass-bg: #e6f5ec; --warn: #9a5b00; --warn-bg: #fff3dc; --fail: #b42318; --fail-bg: #fde8e6;
-  --crit: #8e1b6a; --info: #3b6ea5; --radius: 10px;
+  /* One dark theme for the whole site: website, dashboard and guide. */
+  --bg: #070b12; --surface: #0d1420; --surface-2: #101a29; --border: #1c2840; --text: #e8edf6; --muted: #8b98ae;
+  --accent: #5b9bff; --accent-ink: #06101f; --glow: rgb(91 155 255 / 18%); --shadow: none;
+  --pass: #4fd18b; --pass-bg: #0e2a1d; --warn: #f0b24a; --warn-bg: #2f240c; --fail: #ff7b72; --fail-bg: #331412;
+  --crit: #f08ad0; --info: #7fb0e6; --radius: 6px;
+  --sans: "Inter", "Segoe UI Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0e131a; --surface: #161d27; --surface-2: #1b2430; --border: #2a3544; --text: #e6ebf2; --muted: #98a4b5;
-    --accent: #6b9bff; --accent-ink: #0b1220; --shadow: none;
-    --pass: #5fd08a; --pass-bg: #12301f; --warn: #f0b24a; --warn-bg: #36280d; --fail: #ff8a80; --fail-bg: #3a1714;
-    --crit: #f08ad0; --info: #7fb0e6;
-  }
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-h1, h2, h3 { line-height: 1.25; margin: 0 0 .5rem; } h2 { font-size: 1.05rem; } h3 { font-size: .95rem; margin-top: 1rem; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 var(--sans); overflow-x: clip; }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+h1, h2, h3 { line-height: 1.2; letter-spacing: -.01em; margin: 0 0 .5rem; } h1 em, h2 em { font-style: italic; font-weight: 500; color: var(--accent); } h2 { font-size: 1.05rem; } h3 { font-size: .95rem; margin-top: 1rem; }
 code { font-family: var(--mono); font-size: .86em; } p { margin: .35rem 0; }
 .muted { color: var(--muted); } .small { font-size: .85rem; } .fine { font-size: .8rem; color: var(--muted); }
 .stack { display: grid; gap: 1rem; min-width: 0; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.15rem; box-shadow: var(--shadow); min-width: 0; }
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: .75rem; flex-wrap: wrap; margin-bottom: .5rem; } .card-head h2 { margin: 0; }
-button { font: inherit; padding: .45rem .9rem; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
+button { font: inherit; padding: .45rem .9rem; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; }
 button:hover:not(:disabled) { border-color: var(--accent); } button:disabled { opacity: .55; cursor: not-allowed; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
 button.link { border: 0; background: none; color: var(--accent); padding: .6rem 0; }
@@ -40,3 +36,11 @@ td { padding: .55rem .6rem; border-bottom: 1px solid var(--border); vertical-ali
 .sev-critical { color: var(--crit); } .sev-high { color: var(--fail); } .sev-medium, .sev-unknown { color: var(--warn); } .sev-low { color: var(--info); } .sev-info { color: var(--muted); }
 .error { border-left: 4px solid var(--fail); }
 details > summary { cursor: pointer; color: var(--accent); font-size: .85rem; }
+
+/* shared page primitives (website, dashboard and guide) */
+.wrap { width: 100%; max-width: 1180px; margin: 0 auto; padding: 0 24px; } @media (max-width: 640px) { .wrap { padding: 0 16px; } }
+.btn { display: inline-flex; align-items: center; gap: .4rem; padding: .7rem 1.2rem; border-radius: 6px; font-size: .95rem; font-weight: 600; border: 1px solid var(--border); cursor: pointer; transition: border-color .15s, background .15s; }
+.btn:hover { text-decoration: none; }
+.btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); } .btn-primary:hover { background: #7cb0ff; border-color: #7cb0ff; }
+.btn-ghost { background: transparent; color: var(--text); } .btn-ghost:hover { border-color: var(--accent); }
+.btn-primary:hover { box-shadow: 0 0 0 4px var(--glow); }

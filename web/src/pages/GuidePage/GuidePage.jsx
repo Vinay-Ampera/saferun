@@ -1,28 +1,14 @@
 import { CommandBlock } from '../../components/CommandBlock/CommandBlock'
-import { Footer } from '../../components/Footer/Footer'
-import { Header } from '../../components/Header/Header'
+import { useEffect, useState } from 'react'
+import { Mark } from '../../components/Mark/Mark'
+import { SiteFooter } from '../../components/SiteFooter/SiteFooter'
+import { SiteNav } from '../../components/SiteNav/SiteNav'
+import { HONEST_LIMITS, REQUIREMENTS, SAFETY, STEPS, TRUST, VERDICTS } from '../../content/site'
 import './GuidePage.css'
-
-const TRUST = ['Your code is never run', 'Scans work offline', 'Locked-down containers', 'Everything is verified']
 
 const TOC = [
   ['quick-start', 'Quick start'], ['setup', 'Full setup'], ['concepts', 'How it fits'], ['components', 'What gets installed'], ['commands', 'Commands'], ['checks', 'Checks'],
   ['verdicts', 'Verdicts'], ['fix', 'If something is missing'], ['offline', 'Offline'], ['safety', 'How it stays safe'],
-]
-
-const STEPS = [
-  ['Set up', 'Run saferun init once. It installs only what is missing.', 'saferun init'],
-  ['Verify', 'Check that every part is ready and verified.', 'saferun status'],
-  ['Scan', 'Scan a folder, or drop a ZIP on the dashboard.', 'saferun scan ./my-project'],
-]
-
-const REQUIREMENTS = [
-  ['Operating system', 'Linux. The analyzer image is linux/amd64 only; ARM64 is not supported yet.'],
-  ['Python', '3.12 or newer, with venv and pip.'],
-  ['Docker', 'A local Docker Engine that your user can reach, with memory, swap, pids and CPU limits and seccomp enabled. Remote Docker endpoints are refused. Docker Desktop is not tested.'],
-  ['Cosign', '2.2 or newer, on your PATH. Needed once, to verify the signed analyzer image. SafeRun does not install it for you.'],
-  ['Internet', 'Only for setup (Docker Hub, ghcr.io, sigstore.dev, the OSV download). Scans never use the network.'],
-  ['Disk space', 'About 1.5 GB for images and vulnerability data.'],
 ]
 
 // [title, text, commands, note]
@@ -91,12 +77,6 @@ const CHECKS = [
   ['Python syntax', 'python'], ['JavaScript syntax', 'node'], ['Static analysis (Semgrep)', 'analyzer'], ['Dependency vulnerabilities', 'analyzer + osv-db'],
 ]
 
-const VERDICTS = [
-  ['pass', '✓', 'PASS', 'Every check ran and found nothing.', 'Looks fine, but it is not a proof of safety.'],
-  ['warn', '!', 'WARNING', 'Minor findings, or a check could not run (missing or outdated component).', 'Run saferun status, apply the fix, scan again.'],
-  ['fail', '✕', 'FAIL', 'At least one high or critical finding.', 'Do not run the project until it is fixed.'],
-]
-
 const FIXES = [
   ['Setup says Docker is unusable, or docker: command not found', 'Install Docker Engine and start it (sudo systemctl enable --now docker). docker info must work for your user. SafeRun only uses a local daemon and refuses remote ones.'],
   ['Docker says permission denied', 'Your user is not in the docker group, or the group change is not active yet. Run sudo usermod -aG docker $USER, then log out and back in.'],
@@ -123,15 +103,6 @@ const PRELOAD = [
   ['Analyzer image', 'Cannot be installed without internet yet: the signed download needs ghcr.io and sigstore.dev (and cosign), a local build needs PyPI and GitHub. Run saferun init --only analyzer once while online.'],
 ]
 
-const SAFETY = [
-  ['Your project is never executed', 'It is copied read-only into a throwaway container: no network, non-root user, no Linux capabilities, memory, CPU and process limits.'],
-  ['Images are pinned by digest', 'An image is trusted only if Docker reports the exact pinned digest. A tag that merely exists is not enough.'],
-  ['The analyzer download is signed', 'SafeRun checks a cosign signature, tied to this project\'s release workflow and a release tag, before it pulls the image, then checks the pinned digest again. A signature does not prove the project itself was never compromised.'],
-  ['The analyzer is locked', 'Its image ID, tool versions and rules hash are re-checked before every scan. The lock file must be private to your user.'],
-  ['Vulnerability data has an integrity record', 'SHA-256, size, advisory count and date are re-checked before every scan. Damaged, tampered or old data cannot produce PASS.'],
-  ['The dashboard stays on your machine', 'It accepts connections only from your own computer (loopback) and has no login.'],
-]
-
 function jump(id) {
   const el = document.getElementById(id)
   if (!el) return
@@ -139,35 +110,43 @@ function jump(id) {
   if (el.scrollIntoView) el.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' })
 }
 
-function Shield() {
-  return (
-    <svg className="g-shield" viewBox="0 0 48 56" width="48" height="56" role="img" aria-label="Shield with a check mark">
-      <path d="M24 3 5 10v15c0 13 8 22 19 28 11-6 19-15 19-28V10L24 3Z" fill="none" stroke="currentColor" strokeWidth="3" strokeLinejoin="round" />
-      <path d="m15 27 7 7 12-14" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
 export function GuidePage() {
+  const [active, setActive] = useState('quick-start')
+  // Highlight the section being read. Skipped where IntersectionObserver is missing (the sidebar still works by click).
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return undefined
+    const seen = new Map()
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) seen.set(e.target.id, e.isIntersecting)
+      const first = TOC.find(([id]) => seen.get(id))
+      if (first) setActive(first[0])
+    }, { rootMargin: '-80px 0px -60% 0px' })
+    for (const [id] of TOC) { const el = document.getElementById(id); if (el) io.observe(el) }
+    return () => io.disconnect()
+  }, [])
   return (
     <div className="shell">
-      <Header />
-      <main className="guide">
+      <SiteNav current="#/guide" />
+      <main>
         <section className="g-hero">
-          <Shield />
+          <div className="wrap g-hero-in">
+          <Mark size={48} className="g-shield" />
           <div>
             <h1>Set up SafeRun in three steps</h1>
             <p className="g-lead">SafeRun checks code before you run or trust it, without ever running it. Setup installs only what each check needs, and verifies it.</p>
             <ul className="g-chips" aria-label="What SafeRun guarantees">
-              {TRUST.map((t) => <li key={t}><span aria-hidden="true">✓</span> {t}</li>)}
+              {TRUST.map(([t]) => <li key={t}><span aria-hidden="true">✓</span> {t}</li>)}
             </ul>
+          </div>
           </div>
         </section>
 
+        <div className="wrap docs">
         <nav className="g-toc" aria-label="On this page">
-          {TOC.map(([id, label]) => <button key={id} type="button" onClick={() => jump(id)}>{label}</button>)}
+          {TOC.map(([id, label]) => <button key={id} type="button" className={active === id ? 'on' : undefined} aria-current={active === id ? 'true' : undefined} onClick={() => { setActive(id); jump(id) }}>{label}</button>)}
         </nav>
 
+        <div className="guide docs-body">
         <section id="quick-start" className="card g-section">
           <h2>Quick start</h2>
           <ol className="g-steps">
@@ -282,7 +261,7 @@ export function GuidePage() {
           <ul className="g-safety">
             {SAFETY.map(([a, b]) => <li key={a}><span className="g-tick" aria-hidden="true">✓</span><div><strong>{a}</strong><p>{b}</p></div></li>)}
           </ul>
-          <p className="notice">Honest limits: these checks detect damage and later changes, but a locally recorded hash cannot prove the original download was genuine. PASS means the existing checks found nothing, not that the code is safe. Scans send nothing anywhere and are only as current as your last <code>saferun osv-db update</code>.</p>
+          <p className="notice">{HONEST_LIMITS}</p>
         </section>
 
         <section className="card g-section">
@@ -294,8 +273,10 @@ export function GuidePage() {
             <li>Include requirements.txt or a lockfile so dependencies can be checked.</li>
           </ul>
         </section>
+        </div>
+        </div>
       </main>
-      <Footer />
+      <SiteFooter />
     </div>
   )
 }

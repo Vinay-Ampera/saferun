@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, deleteScan, getHealth, getScan, startScan } from '../../api/client'
-import { Footer } from '../../components/Footer/Footer'
-import { Header } from '../../components/Header/Header'
 import { ResultPanel } from '../../components/ResultPanel/ResultPanel'
+import { SiteFooter } from '../../components/SiteFooter/SiteFooter'
+import { SiteNav } from '../../components/SiteNav/SiteNav'
 import { UploadPanel } from '../../components/UploadPanel/UploadPanel'
 import { describeCode } from '../../utils/errors'
 import { txt } from '../../utils/report'
@@ -70,7 +70,7 @@ export function DashboardPage({ pollMs = POLL_MS }) {
 
   return (
     <div className="shell">
-      <Header />
+      <SiteNav current="#/dashboard" />
       <main className="layout">
         <aside className="stack">
           <UploadPanel busy={busy} health={health} osv={osv} onOsv={setOsv} onFile={onFile} />
@@ -92,7 +92,7 @@ export function DashboardPage({ pollMs = POLL_MS }) {
           {phase.kind === 'finished' && <ResultPanel job={phase.job} name={phase.name} onReset={reset} />}
         </section>
       </main>
-      <Footer />
+      <SiteFooter />
     </div>
   )
 }
