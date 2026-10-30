@@ -3,7 +3,6 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../../App'
 import { GITHUB } from '../../content/site'
-import { resetIntroSeen } from '../../components/landing/IntroSplash/IntroSplash'
 import { LandingPage } from './LandingPage'
 
 afterEach(() => { vi.restoreAllMocks(); window.location.hash = '' })
@@ -79,30 +78,62 @@ describe('Landing page', () => {
   })
 })
 
-describe('Intro', () => {
-  const calm = (reduce) => vi.stubGlobal('matchMedia', () => ({ matches: reduce }))
-  afterEach(() => { vi.unstubAllGlobals(); resetIntroSeen(); document.body.classList.remove('intro-lock') })
+describe('Scroll hero', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
-  it('plays once, can be skipped, and does not replay when you come back within the same page load', () => {
-    resetIntroSeen(); calm(false)
-    const a = render(<LandingPage />)
-    expect(a.container.parentElement.querySelector('[data-testid=intro]')).not.toBeNull()
-    expect(a.container.querySelector('.shell').className).toContain('intro-on')
-    fireEvent.click(screen.getByRole('button', { name: 'Skip intro' }))
-    expect(document.querySelector('[data-testid=intro]')).toBeNull()
-    expect(a.container.querySelector('.shell').className).not.toContain('intro-on')
-    a.unmount()
-    render(<LandingPage />)
-    expect(document.querySelector('[data-testid=intro]')).toBeNull()
+  it('shows its finished state, not pinned, when animation is unavailable', () => {
+    const { container } = render(<LandingPage />)
+    expect(container.querySelector('.sh').className).not.toContain('sh-live')
+    expect(container.querySelector('h1').textContent).toMatch(/before/)
+    expect(container.querySelectorAll('.sh-card[aria-hidden=true]')).toHaveLength(2)
   })
 
-  it('is skipped with reduced motion and for section links', () => {
-    resetIntroSeen(); calm(true)
-    render(<LandingPage />).unmount()
-    expect(document.querySelector('[data-testid=intro]')).toBeNull()
-    calm(false)
-    render(<LandingPage section="security" />)
-    expect(document.querySelector('[data-testid=intro]')).toBeNull()
+  it('is not animated with reduced motion', () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: true }))
+    expect(render(<LandingPage />).container.querySelector('.sh').className).not.toContain('sh-live')
+  })
+
+  it('scroll position drives it: headline takes over late in the scroll, and reverses', () => {
+    vi.stubGlobal('matchMedia', (q) => ({ matches: q.includes('hover') ? false : false }))
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function () { return this.classList.contains('sh-pin') ? 400 : 1000 })
+    let top = 64
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function () { return this.classList.contains('sh') ? { top, left: 0, width: 100, height: 1000 } : { top: 0, left: 0, width: 100, height: 100 } })
+    let queued = null
+    vi.stubGlobal('requestAnimationFrame', (f) => { queued = f; return 1 })
+    const flush = () => { const f = queued; queued = null; f?.() }
+    const { container } = render(<LandingPage />)
+    const sh = container.querySelector('.sh')
+    expect(sh.className).toContain('sh-live')
+    expect(sh.className).not.toContain('sh-copy-on')
+    top = 64 - 540 // 90% through the 600px of scroll range
+    fireEvent.scroll(window); flush()
+    expect(sh.className).toContain('sh-copy-on')
+    top = 64
+    fireEvent.scroll(window); flush()
+    expect(sh.className).not.toContain('sh-copy-on')
+  })
+})
+
+describe('Cursor tilt', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it('follows the cursor on fine pointers and resets when it leaves', () => {
+    vi.stubGlobal('matchMedia', (q) => ({ matches: q.includes('hover') }))
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({ top: 0, left: 0, width: 1000, height: 500 })
+    const { container } = render(<LandingPage />)
+    const sh = container.querySelector('.sh'); const pin = container.querySelector('.sh-pin')
+    fireEvent.pointerMove(pin, { clientX: 1000, clientY: 0 })
+    expect(sh.style.getPropertyValue('--mx')).toBe('1')
+    expect(sh.style.getPropertyValue('--my')).toBe('-1')
+    fireEvent.pointerLeave(pin)
+    expect(sh.style.getPropertyValue('--mx')).toBe('0')
+  })
+
+  it('does not listen for the cursor on touch devices', () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: false }))
+    const { container } = render(<LandingPage />)
+    fireEvent.pointerMove(container.querySelector('.sh-pin'), { clientX: 500, clientY: 200 })
+    expect(container.querySelector('.sh').style.getPropertyValue('--mx')).toBe('')
   })
 })
 

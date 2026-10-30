@@ -19,7 +19,7 @@ export function FlowDiagram() {
       <g clipPath="url(#flow-clip)"><rect className="flow-scan" x="190" y="24" width="186" height="26" fill="url(#flow-beam)" /></g>
       <text x="283" y="8" className="flow-cap" textAnchor="middle">isolated analyzer</text>
       <path d="M283 42l-18 7v11c0 10 7.5 16 18 21 10.5-5 18-11 18-21V49l-18-7Z" className="flow-shield" />
-      <path d="m275 62 6 6 10-11" className="flow-tick" />
+      <path d="M277 53v18l15-9-15-9Z" className="flow-tick" />
       <text x="283" y="102" className="flow-mono" textAnchor="middle">no network · read-only</text>
       <text x="283" y="118" className="flow-mono flow-dim" textAnchor="middle">code is never executed</text>
       <path d="M390 75h56" className="flow-line" markerEnd="url(#flow-arr)" />

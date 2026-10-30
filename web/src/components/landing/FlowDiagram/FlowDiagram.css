@@ -7,7 +7,7 @@
 .flow-mono { fill: var(--text); font: 11.5px var(--mono); } .flow-mono.flow-dim { fill: var(--muted); }
 .flow-mono.flow-ok { fill: var(--pass); } .flow-mono.flow-warn { fill: var(--warn); } .flow-mono.flow-bad { fill: var(--fail); }
 .flow-shield { fill: var(--glow); stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
-.flow-tick { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.flow-tick { fill: var(--accent); stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
 
 /* motion: packets flow in, a scan sweeps the isolated box, the report cycles its three verdicts */
 .flow-pk { fill: var(--accent); opacity: 0; } .flow-hl { fill: var(--accent); opacity: 0; } .flow-scan { opacity: 0; }
